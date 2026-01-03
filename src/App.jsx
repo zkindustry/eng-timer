@@ -21,7 +21,7 @@ import {
   where
 } from 'firebase/firestore';
 import { 
-  Play, Square, Clock, PieChart, Database, List, Briefcase, LogOut, KeyRound, AlertCircle, Zap, Plus, Calendar, BarChart3, ChevronRight, Trash2, FolderTree, FileText, ChevronDown, ChevronUp, Settings, X, GripVertical, AlertTriangle
+  Play, Square, Clock, PieChart, Database, List, Briefcase, LogOut, KeyRound, AlertCircle, Zap, Plus, Calendar, BarChart3, ChevronRight, Trash2, FolderTree, FileText, ChevronDown, ChevronUp, Settings, X, GripVertical, AlertTriangle, Check
 } from 'lucide-react';
 
 // --- 1. Firebase 配置 ---
@@ -148,13 +148,13 @@ export default function TimeTrackerApp() {
   const [importTarget, setImportTarget] = useState('projects'); // 'projects' | 'tasks'
   const [notionConfig, setNotionConfig] = useState({
     dbId: '',
-    titleProp: 'Name', // 标题属性名
-    typeProp: 'Type',  // 类型/分类属性名 (用于项目分类)
+    titleProp: 'Name', // 标题属性名 (Col Name)
+    typeProp: 'Status',  // 类型/分类属性名 (Col Name)
+    typePropType: 'select', // Notion 字段的数据类型 (select, status, relation)
     writeBackProp: 'TimeSpent', // 回写时用的属性名
-    apiKey: '', // 仅在前端暂存，实际应在后端
     isRealMode: false // false=模拟模式, true=真实API模式
   });
-  const [importLog, setImportLog] = useState(''); // 导入日志
+  const [importLog, setImportLog] = useState(''); 
 
   // --- 拖拽状态 ---
   const [draggedTaskId, setDraggedTaskId] = useState(null);
@@ -267,15 +267,11 @@ export default function TimeTrackerApp() {
   const handleDrop = async (e, targetProjectId) => {
     e.preventDefault();
     if (!draggedTaskId || !targetProjectId) return;
-    
-    // 更新任务的 projectId
     try {
       const taskRef = doc(db, 'artifacts', appId, 'users', user.uid, 'tasks', draggedTaskId);
       await updateDoc(taskRef, { projectId: targetProjectId });
-      // 如果当前展开的不是目标项目，可以考虑自动展开(可选)
       setExpandedProjects(prev => ({ ...prev, [targetProjectId]: true }));
     } catch (err) {
-      console.error("Move failed:", err);
       alert("移动失败");
     }
     setDraggedTaskId(null);
@@ -289,7 +285,8 @@ export default function TimeTrackerApp() {
     setNotionConfig(prev => ({
       ...prev,
       titleProp: target === 'projects' ? 'Project Name' : 'Task Name',
-      typeProp: 'Status', // 默认为 Status 或 Type
+      typeProp: target === 'projects' ? 'Status' : 'Project Relation',
+      typePropType: target === 'projects' ? 'select' : 'relation', // 默认类型
     }));
     setImportModalOpen(true);
   };
@@ -298,7 +295,7 @@ export default function TimeTrackerApp() {
     e.preventDefault();
     setImportLog('开始连接...');
     
-    const { dbId, titleProp, typeProp, isRealMode } = notionConfig;
+    const { dbId, titleProp, typeProp, typePropType, isRealMode } = notionConfig;
 
     if (!isRealMode) {
       // --- 模拟模式 (演示用) ---
@@ -309,9 +306,9 @@ export default function TimeTrackerApp() {
             { [titleProp]: 'P-101: 压缩机组设计', [typeProp]: '进行中', id: 'mock-p-1' },
             { [titleProp]: 'T-204: 燃气轮机大修', [typeProp]: '计划中', id: 'mock-p-2' },
           ];
-          processImportData(mockProjects, titleProp, typeProp);
+          processImportData(mockProjects, titleProp, typeProp, typePropType);
         } else {
-          // 导入任务，需要有项目
+          // 导入任务
           if (projects.length === 0) {
             setImportLog('错误: 请先导入项目');
             return;
@@ -321,71 +318,77 @@ export default function TimeTrackerApp() {
             { [titleProp]: '绘制 PID 图', [typeProp]: '待办', id: 'mock-t-1', projectId: pid },
             { [titleProp]: '编写规格书', [typeProp]: '进行中', id: 'mock-t-2', projectId: pid },
           ];
-          processImportData(mockTasks, titleProp, typeProp);
+          processImportData(mockTasks, titleProp, typeProp, typePropType);
         }
       }, 800);
       return;
     }
 
-    // --- 真实模式 (尝试连接后端) ---
-    setImportLog(`正在连接真实数据库 ${dbId}...`);
+    // --- 真实模式 ---
+    setImportLog(`正在请求 Netlify Function (${dbId})...`);
     try {
-      // 注意: 这里假设您部署的 Vercel 后端路径为 /api/notion
-      // 如果是 Canvas 预览环境，fetch 会失败 (404 或 CORS)
-      const res = await fetch('/api/notion', {
+      // 自动适配 Netlify Function 路径
+      // 本地开发通常是 /api/notion 或 /.netlify/functions/notion
+      // 如果 404，说明 functions 没部署成功
+      const functionUrl = window.location.hostname.includes('localhost') 
+        ? '/.netlify/functions/notion' // 本地 vite 代理或 netlify dev
+        : '/.netlify/functions/notion'; // 生产环境标准路径
+
+      const res = await fetch(functionUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          databaseId: dbId, 
-          // 可以在这里传更复杂的 filter
-        })
+        body: JSON.stringify({ databaseId: dbId })
       });
 
       if (!res.ok) {
-        if (res.status === 404) throw new Error("错误 404: 未找到后端接口 (您是否已部署到 Vercel?)");
-        if (res.status === 500) throw new Error("错误 500: 后端连接 Notion 失败 (请检查 Vercel 环境变量)");
-        throw new Error(`网络错误: ${res.statusText}`);
+        if (res.status === 404) throw new Error("404: 找不到 Netlify Function。请确保 'netlify/functions/notion.js' 文件已部署。");
+        if (res.status === 500) throw new Error("500: 服务器错误。请检查 Netlify 环境变量 NOTION_API_KEY 是否设置。");
+        throw new Error(`HTTP 错误: ${res.status}`);
       }
 
       const data = await res.json();
       setImportLog(`连接成功! 获取到 ${data.results?.length || 0} 条数据，正在解析...`);
       
-      // 解析 Notion 原始数据 (简化版逻辑)
       const parsedData = data.results.map(page => {
-        // Notion 属性读取非常复杂，这里做简单的健壮性处理
         const props = page.properties;
         
-        // 获取 Title (Name)
+        // 解析标题
         const titleObj = props[titleProp];
         const titleValue = titleObj?.title?.[0]?.plain_text || titleObj?.rich_text?.[0]?.plain_text || '未命名';
         
-        // 获取 Type (Select/MultiSelect)
+        // 解析类型/分类 (根据用户选择的 Notion 类型进行解析)
+        let typeValue = '默认';
         const typeObj = props[typeProp];
-        const typeValue = typeObj?.select?.name || typeObj?.status?.name || '默认';
+        
+        if (typeObj) {
+           if (typePropType === 'select') typeValue = typeObj.select?.name;
+           else if (typePropType === 'status') typeValue = typeObj.status?.name;
+           else if (typePropType === 'multi_select') typeValue = typeObj.multi_select?.[0]?.name;
+           else if (typePropType === 'relation') typeValue = typeObj.relation?.[0]?.id; // 暂时只取 ID
+        }
 
         return {
           [titleProp]: titleValue,
-          [typeProp]: typeValue,
+          [typeProp]: typeValue || '无',
           id: page.id
         };
       });
 
-      processImportData(parsedData, titleProp, typeProp);
+      processImportData(parsedData, titleProp, typeProp, typePropType);
 
     } catch (err) {
-      setImportLog(`连接失败: ${err.message}`);
+      setImportLog(`同步失败: ${err.message}`);
       console.error(err);
     }
   };
 
-  const processImportData = async (dataList, titleKey, typeKey) => {
+  const processImportData = async (dataList, titleKey, typeKey, typePropType) => {
     let count = 0;
     try {
       if (importTarget === 'projects') {
         for (const item of dataList) {
           const name = item[titleKey];
-          const type = item[typeKey]; // 这里可以将类型存入 tags
-          // 避免重复导入
+          const type = item[typeKey]; 
           if (name && !projects.find(p => p.notionId === item.id)) {
             await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'projects'), { 
               name, 
@@ -397,21 +400,33 @@ export default function TimeTrackerApp() {
           }
         }
       } else {
-        // 导入任务 (简单逻辑：如果没有关联项目，默认放入第一个项目，或者新建一个“未分类”项目)
-        // 真实场景应该读取 Notion 的 Relation 字段来匹配项目，这里简化处理
-        let targetProjectId = projects[0]?.id; 
-        if (!targetProjectId) {
-           const newProj = await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'projects'), { name: '未分类导入', notionId: 'uncategorized', createdAt: serverTimestamp() });
-           targetProjectId = newProj.id;
+        // 导入任务逻辑
+        // 如果用户选择了 'relation' 类型，说明 Notion 里的任务已经关联了项目
+        // 这是一个高级功能：尝试通过 Relation ID 匹配本地项目
+        
+        // 默认兜底项目
+        let defaultProjId = projects[0]?.id;
+        if (!defaultProjId) {
+             const newP = await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'projects'), { name: '导入缓冲池', notionId: 'buffer', createdAt: serverTimestamp() });
+             defaultProjId = newP.id;
         }
 
         for (const item of dataList) {
            const name = item[titleKey];
+           let targetProjectId = defaultProjId;
+           
+           // 尝试匹配关联项目
+           if (typePropType === 'relation') {
+              const relationId = item[typeKey]; // 这里存的是 Notion Page ID
+              const linkedProj = projects.find(p => p.notionId === relationId);
+              if (linkedProj) targetProjectId = linkedProj.id;
+           }
+
            if (name && !tasks.find(t => t.notionId === item.id)) {
              await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'tasks'), { 
                name, 
                notionId: item.id, 
-               projectId: targetProjectId, // 待优化: 应根据 Notion Relation 匹配
+               projectId: targetProjectId,
                createdAt: serverTimestamp() 
              });
              count++;
@@ -428,24 +443,24 @@ export default function TimeTrackerApp() {
     // 模拟回写
     const targetName = task?.name || project?.name;
     const targetId = task?.notionId || project?.notionId;
-    const propName = notionConfig.writeBackProp; // 用户配置的属性名
+    const propName = notionConfig.writeBackProp; 
 
     const msg = document.createElement('div');
     msg.innerHTML = `
       <div class="font-bold">[Notion Sync]</div>
       <div class="text-xs">目标: ${targetName}</div>
-      <div class="text-xs">列名: ${propName} (Number)</div>
+      <div class="text-xs">列名: ${propName}</div>
       <div class="text-xs">增加: +${duration} min</div>
-      ${notionConfig.isRealMode ? '<div class="text-xs text-yellow-300 mt-1">正在调用 API...</div>' : '<div class="text-xs text-slate-300 mt-1">(模拟模式)</div>'}
+      ${notionConfig.isRealMode ? '<div class="text-xs text-yellow-300 mt-1">调用 Function...</div>' : '<div class="text-xs text-slate-300 mt-1">(模拟模式)</div>'}
     `;
     msg.className = "fixed bottom-4 right-4 bg-slate-800 text-white px-4 py-3 rounded-lg shadow-xl z-50 animate-fade-in border-l-4 border-purple-500";
     document.body.appendChild(msg);
     setTimeout(() => msg.remove(), 4000);
 
     if (notionConfig.isRealMode && targetId) {
-        // 真实回写逻辑 (需要后端支持)
+        // 调用写回 Function
         try {
-            await fetch('/api/notion-update', {
+            await fetch('/.netlify/functions/notion-update', {
                 method: 'POST',
                 body: JSON.stringify({ pageId: targetId, property: propName, value: parseFloat(duration) })
             });
@@ -503,9 +518,8 @@ export default function TimeTrackerApp() {
               <div className="bg-amber-50 border border-amber-100 p-4 rounded-lg mb-6 text-sm text-amber-900 flex gap-3">
                  <AlertTriangle className="shrink-0 mt-0.5" size={18}/>
                  <div>
-                   <p className="font-bold">关于真实数据导入</p>
-                   <p className="mt-1">浏览器无法直接连接 Notion API (CORS 限制)。</p>
-                   <p>若要在 Canvas 预览，请使用<b>模拟模式</b>。若已部署后端(Vercel)，请切换至<b>真实 API 模式</b>。</p>
+                   <p className="font-bold">部署提示 (Netlify)</p>
+                   <p className="mt-1 text-xs">若报 404 错误，请检查项目根目录是否存在 <code>netlify/functions/notion.js</code> 文件，并确保 <code>NOTION_API_KEY</code> 环境变量已设置。</p>
                  </div>
               </div>
 
@@ -527,27 +541,45 @@ export default function TimeTrackerApp() {
                   />
                 </div>
 
-                <div className="grid grid-cols-2 gap-4">
+                {/* 字段映射配置 */}
+                <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-4">
+                  <h4 className="text-xs font-bold text-slate-700 uppercase border-b border-slate-200 pb-2">字段映射 (Field Mapping)</h4>
                   <div>
-                    <label className="block text-xs font-bold text-slate-500 uppercase mb-1">标题列名 (Title)</label>
+                    <label className="block text-xs font-bold text-slate-500 uppercase mb-1">标题/名称 (Title)</label>
                     <input 
                       type="text" 
-                      placeholder="例: Name" 
-                      className="w-full bg-slate-50 border border-slate-200 rounded-lg px-4 py-2 outline-none focus:ring-2 focus:ring-blue-500"
+                      placeholder="例: Name, Task Name" 
+                      className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-blue-500"
                       value={notionConfig.titleProp}
                       onChange={(e) => setNotionConfig({...notionConfig, titleProp: e.target.value})}
                       required
                     />
                   </div>
-                  <div>
-                    <label className="block text-xs font-bold text-slate-500 uppercase mb-1">类型/状态列名</label>
-                    <input 
-                      type="text" 
-                      placeholder="例: Status" 
-                      className="w-full bg-slate-50 border border-slate-200 rounded-lg px-4 py-2 outline-none focus:ring-2 focus:ring-blue-500"
-                      value={notionConfig.typeProp}
-                      onChange={(e) => setNotionConfig({...notionConfig, typeProp: e.target.value})}
-                    />
+                  
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                       <label className="block text-xs font-bold text-slate-500 uppercase mb-1">类型/状态列名</label>
+                       <input 
+                         type="text" 
+                         placeholder="例: Status, Project" 
+                         className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-blue-500"
+                         value={notionConfig.typeProp}
+                         onChange={(e) => setNotionConfig({...notionConfig, typeProp: e.target.value})}
+                       />
+                    </div>
+                    <div>
+                       <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Notion 属性类型</label>
+                       <select 
+                         className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-blue-500"
+                         value={notionConfig.typePropType}
+                         onChange={(e) => setNotionConfig({...notionConfig, typePropType: e.target.value})}
+                       >
+                         <option value="select">Select (单选)</option>
+                         <option value="status">Status (状态)</option>
+                         <option value="multi_select">Multi-Select (多选)</option>
+                         <option value="relation">Relation (关联)</option>
+                       </select>
+                    </div>
                   </div>
                 </div>
 

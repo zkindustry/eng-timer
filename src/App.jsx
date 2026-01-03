@@ -21,7 +21,7 @@ import {
   where
 } from 'firebase/firestore';
 import { 
-  Play, Square, Clock, PieChart, Database, List, Briefcase, LogOut, KeyRound, AlertCircle, Zap, Plus, Calendar, BarChart3, ChevronRight, Trash2, FolderTree, FileText, ChevronDown, ChevronUp, Settings, X
+  Play, Square, Clock, PieChart, Database, List, Briefcase, LogOut, KeyRound, AlertCircle, Zap, Plus, Calendar, BarChart3, ChevronRight, Trash2, FolderTree, FileText, ChevronDown, ChevronUp, Settings, X, GripVertical, AlertTriangle
 } from 'lucide-react';
 
 // --- 1. Firebase 配置 ---
@@ -33,7 +33,7 @@ if (typeof __firebase_config !== 'undefined') {
   appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
 } else {
   firebaseConfig = {
-     apiKey: "AIzaSyA4BIfAOxJqWzdzGPx900Zx2_IOQLn4-Bg",
+ apiKey: "AIzaSyA4BIfAOxJqWzdzGPx900Zx2_IOQLn4-Bg",
   authDomain: "timer-4c74c.firebaseapp.com",
   projectId: "timer-4c74c",
   storageBucket: "timer-4c74c.firebasestorage.app",
@@ -143,13 +143,21 @@ export default function TimeTrackerApp() {
   const [dashboardTab, setDashboardTab] = useState('week');
   const [expandedProjects, setExpandedProjects] = useState({}); 
 
-  // --- 新增: 导入配置 Modal 状态 ---
+  // --- Notion 配置状态 ---
   const [importModalOpen, setImportModalOpen] = useState(false);
   const [importTarget, setImportTarget] = useState('projects'); // 'projects' | 'tasks'
   const [notionConfig, setNotionConfig] = useState({
     dbId: '',
-    titleProp: 'Name', // 默认为 Name
+    titleProp: 'Name', // 标题属性名
+    typeProp: 'Type',  // 类型/分类属性名 (用于项目分类)
+    writeBackProp: 'TimeSpent', // 回写时用的属性名
+    apiKey: '', // 仅在前端暂存，实际应在后端
+    isRealMode: false // false=模拟模式, true=真实API模式
   });
+  const [importLog, setImportLog] = useState(''); // 导入日志
+
+  // --- 拖拽状态 ---
+  const [draggedTaskId, setDraggedTaskId] = useState(null);
 
   // Auth Init
   useEffect(() => {
@@ -185,8 +193,7 @@ export default function TimeTrackerApp() {
     return () => { unsubProjects(); unsubTasks(); unsubLogs(); };
   }, [user]);
 
-  // --- 逻辑控制 ---
-
+  // --- 计时逻辑 ---
   const handleStartTimer = async () => {
     if (!user || !selectedProjectId) return;
     if (activeLog) return; 
@@ -231,86 +238,222 @@ export default function TimeTrackerApp() {
       const endTime = new Date();
       await updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'timelogs', activeLog.id), { endTime: endTime });
       
-      // Notion 回写
       const task = tasks.find(t => t.id === activeLog.taskId);
-      if (task && task.notionId) {
-        const durationSec = (endTime - activeLog.startTime) / 1000;
-        await syncBackToNotion(task.notionId, durationSec, 'Task');
-      } else {
-        const project = projects.find(p => p.id === activeLog.projectId);
-        if (project && project.notionId) {
-          const durationSec = (endTime - activeLog.startTime) / 1000;
-          await syncBackToNotion(project.notionId, durationSec, 'Project');
-        }
+      const project = projects.find(p => p.id === activeLog.projectId);
+      
+      // 触发回写
+      if (task?.notionId || project?.notionId) {
+        const durationMin = ((endTime - activeLog.startTime) / 1000 / 60).toFixed(1);
+        await syncBackToNotion(task, project, durationMin);
       }
     } catch (e) { console.error("停止失败:", e); }
   };
 
   const handleDeleteLog = async (logId) => { if(confirm("确定删除?")) await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'timelogs', logId)); };
-  const handleDeleteProject = async (projId) => { if(confirm("删除项目危险，确定继续?")) await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'projects', projId)); };
+  const handleDeleteProject = async (projId) => { if(confirm("警告：删除项目可能导致关联任务孤立，确定继续?")) await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'projects', projId)); };
   const handleDeleteTask = async (taskId) => { if(confirm("确定删除任务?")) await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'tasks', taskId)); };
 
-  // --- 导入功能升级 ---
+  // --- 拖拽逻辑 (HTML5 DnD) ---
+  const handleDragStart = (e, taskId) => {
+    setDraggedTaskId(taskId);
+    e.dataTransfer.effectAllowed = "move";
+  };
+  
+  const handleDragOver = (e) => {
+    e.preventDefault(); // 允许放置
+    e.dataTransfer.dropEffect = "move";
+  };
+
+  const handleDrop = async (e, targetProjectId) => {
+    e.preventDefault();
+    if (!draggedTaskId || !targetProjectId) return;
+    
+    // 更新任务的 projectId
+    try {
+      const taskRef = doc(db, 'artifacts', appId, 'users', user.uid, 'tasks', draggedTaskId);
+      await updateDoc(taskRef, { projectId: targetProjectId });
+      // 如果当前展开的不是目标项目，可以考虑自动展开(可选)
+      setExpandedProjects(prev => ({ ...prev, [targetProjectId]: true }));
+    } catch (err) {
+      console.error("Move failed:", err);
+      alert("移动失败");
+    }
+    setDraggedTaskId(null);
+  };
+
+  // --- 导入功能 ---
   const openImportModal = (target) => {
     setImportTarget(target);
-    setNotionConfig({ dbId: '', titleProp: target === 'projects' ? 'ProjectName' : 'TaskName' }); // 默认值提示
+    setImportLog('');
+    // 默认配置建议
+    setNotionConfig(prev => ({
+      ...prev,
+      titleProp: target === 'projects' ? 'Project Name' : 'Task Name',
+      typeProp: 'Status', // 默认为 Status 或 Type
+    }));
     setImportModalOpen(true);
   };
 
   const executeImport = async (e) => {
     e.preventDefault();
-    setImportModalOpen(false);
+    setImportLog('开始连接...');
     
-    const { dbId, titleProp } = notionConfig;
-    const dbTypeName = importTarget === 'projects' ? '项目库' : '任务库';
+    const { dbId, titleProp, typeProp, isRealMode } = notionConfig;
 
-    if(confirm(`[准备就绪] 即将连接 Notion。\n\n数据库ID: ${dbId || '模拟ID'}\n目标列名: ${titleProp}\n\n点击确定开始同步...`)) {
-      // 模拟 API 调用过程，这里展示了如何使用用户配置的 titleProp
-      if (importTarget === 'projects') {
-        const mockProjects = [
-          { [titleProp]: 'P-101: 离心压缩机组设计', id: 'proj-001' },
-          { [titleProp]: 'T-204: 燃气轮机大修', id: 'proj-002' },
-        ];
-        let count = 0;
-        for (const p of mockProjects) {
-           // 动态读取属性: p[titleProp]
-           const name = p[titleProp];
-           if (name && !projects.find(e => e.notionId === p.id)) {
-             await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'projects'), { name, notionId: p.id, createdAt: serverTimestamp() });
-             count++;
-           }
+    if (!isRealMode) {
+      // --- 模拟模式 (演示用) ---
+      setImportLog('模式: 模拟演示 (无需后端)');
+      setTimeout(() => {
+        if (importTarget === 'projects') {
+          const mockProjects = [
+            { [titleProp]: 'P-101: 压缩机组设计', [typeProp]: '进行中', id: 'mock-p-1' },
+            { [titleProp]: 'T-204: 燃气轮机大修', [typeProp]: '计划中', id: 'mock-p-2' },
+          ];
+          processImportData(mockProjects, titleProp, typeProp);
+        } else {
+          // 导入任务，需要有项目
+          if (projects.length === 0) {
+            setImportLog('错误: 请先导入项目');
+            return;
+          }
+          const pid = projects[0].id;
+          const mockTasks = [
+            { [titleProp]: '绘制 PID 图', [typeProp]: '待办', id: 'mock-t-1', projectId: pid },
+            { [titleProp]: '编写规格书', [typeProp]: '进行中', id: 'mock-t-2', projectId: pid },
+          ];
+          processImportData(mockTasks, titleProp, typeProp);
         }
-        alert(`成功导入 ${count} 个项目 (已根据 '${titleProp}' 列名解析)。`);
-      } else {
-        // 导入任务
-        if (projects.length === 0) { alert("无项目，无法归类任务"); return; }
-        const targetProjId = projects[0].id;
-        const mockTasks = [
-          { [titleProp]: '任务A: PID图纸绘制', id: 'task-101', projectId: targetProjId },
-          { [titleProp]: '任务B: 选型计算书', id: 'task-102', projectId: targetProjId },
-        ];
-        let count = 0;
-        for (const t of mockTasks) {
-           const name = t[titleProp];
-           if (name && !tasks.find(e => e.notionId === t.id)) {
-             await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'tasks'), { name, notionId: t.id, projectId: targetProjId, createdAt: serverTimestamp() });
-             count++;
-           }
-        }
-        alert(`成功导入 ${count} 个任务 (已根据 '${titleProp}' 列名解析)。`);
+      }, 800);
+      return;
+    }
+
+    // --- 真实模式 (尝试连接后端) ---
+    setImportLog(`正在连接真实数据库 ${dbId}...`);
+    try {
+      // 注意: 这里假设您部署的 Vercel 后端路径为 /api/notion
+      // 如果是 Canvas 预览环境，fetch 会失败 (404 或 CORS)
+      const res = await fetch('/api/notion', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          databaseId: dbId, 
+          // 可以在这里传更复杂的 filter
+        })
+      });
+
+      if (!res.ok) {
+        if (res.status === 404) throw new Error("错误 404: 未找到后端接口 (您是否已部署到 Vercel?)");
+        if (res.status === 500) throw new Error("错误 500: 后端连接 Notion 失败 (请检查 Vercel 环境变量)");
+        throw new Error(`网络错误: ${res.statusText}`);
       }
+
+      const data = await res.json();
+      setImportLog(`连接成功! 获取到 ${data.results?.length || 0} 条数据，正在解析...`);
+      
+      // 解析 Notion 原始数据 (简化版逻辑)
+      const parsedData = data.results.map(page => {
+        // Notion 属性读取非常复杂，这里做简单的健壮性处理
+        const props = page.properties;
+        
+        // 获取 Title (Name)
+        const titleObj = props[titleProp];
+        const titleValue = titleObj?.title?.[0]?.plain_text || titleObj?.rich_text?.[0]?.plain_text || '未命名';
+        
+        // 获取 Type (Select/MultiSelect)
+        const typeObj = props[typeProp];
+        const typeValue = typeObj?.select?.name || typeObj?.status?.name || '默认';
+
+        return {
+          [titleProp]: titleValue,
+          [typeProp]: typeValue,
+          id: page.id
+        };
+      });
+
+      processImportData(parsedData, titleProp, typeProp);
+
+    } catch (err) {
+      setImportLog(`连接失败: ${err.message}`);
+      console.error(err);
     }
   };
 
-  const syncBackToNotion = async (notionId, durationSec, type) => {
-    const msg = document.createElement('div');
-    msg.innerText = `[Notion] 更新 ${type} (ID: ${notionId}) 时长 +${(durationSec/60).toFixed(1)} min`;
-    msg.className = "fixed top-4 right-4 bg-purple-600 text-white px-4 py-2 rounded shadow-lg z-50 animate-fade-in";
-    document.body.appendChild(msg);
-    setTimeout(() => msg.remove(), 3000);
+  const processImportData = async (dataList, titleKey, typeKey) => {
+    let count = 0;
+    try {
+      if (importTarget === 'projects') {
+        for (const item of dataList) {
+          const name = item[titleKey];
+          const type = item[typeKey]; // 这里可以将类型存入 tags
+          // 避免重复导入
+          if (name && !projects.find(p => p.notionId === item.id)) {
+            await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'projects'), { 
+              name, 
+              tags: type ? [type] : [],
+              notionId: item.id, 
+              createdAt: serverTimestamp() 
+            });
+            count++;
+          }
+        }
+      } else {
+        // 导入任务 (简单逻辑：如果没有关联项目，默认放入第一个项目，或者新建一个“未分类”项目)
+        // 真实场景应该读取 Notion 的 Relation 字段来匹配项目，这里简化处理
+        let targetProjectId = projects[0]?.id; 
+        if (!targetProjectId) {
+           const newProj = await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'projects'), { name: '未分类导入', notionId: 'uncategorized', createdAt: serverTimestamp() });
+           targetProjectId = newProj.id;
+        }
+
+        for (const item of dataList) {
+           const name = item[titleKey];
+           if (name && !tasks.find(t => t.notionId === item.id)) {
+             await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'tasks'), { 
+               name, 
+               notionId: item.id, 
+               projectId: targetProjectId, // 待优化: 应根据 Notion Relation 匹配
+               createdAt: serverTimestamp() 
+             });
+             count++;
+           }
+        }
+      }
+      setImportLog(`同步完成! 成功导入 ${count} 条新数据。`);
+    } catch (e) {
+      setImportLog(`写入数据库出错: ${e.message}`);
+    }
   };
 
-  // --- 报表筛选 (略微精简以节省空间，逻辑不变) ---
+  const syncBackToNotion = async (task, project, duration) => {
+    // 模拟回写
+    const targetName = task?.name || project?.name;
+    const targetId = task?.notionId || project?.notionId;
+    const propName = notionConfig.writeBackProp; // 用户配置的属性名
+
+    const msg = document.createElement('div');
+    msg.innerHTML = `
+      <div class="font-bold">[Notion Sync]</div>
+      <div class="text-xs">目标: ${targetName}</div>
+      <div class="text-xs">列名: ${propName} (Number)</div>
+      <div class="text-xs">增加: +${duration} min</div>
+      ${notionConfig.isRealMode ? '<div class="text-xs text-yellow-300 mt-1">正在调用 API...</div>' : '<div class="text-xs text-slate-300 mt-1">(模拟模式)</div>'}
+    `;
+    msg.className = "fixed bottom-4 right-4 bg-slate-800 text-white px-4 py-3 rounded-lg shadow-xl z-50 animate-fade-in border-l-4 border-purple-500";
+    document.body.appendChild(msg);
+    setTimeout(() => msg.remove(), 4000);
+
+    if (notionConfig.isRealMode && targetId) {
+        // 真实回写逻辑 (需要后端支持)
+        try {
+            await fetch('/api/notion-update', {
+                method: 'POST',
+                body: JSON.stringify({ pageId: targetId, property: propName, value: parseFloat(duration) })
+            });
+        } catch(e) { console.error("Writeback failed", e); }
+    }
+  };
+
+  // --- 报表筛选 ---
   const getFilteredLogs = () => {
     const now = new Date();
     const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -345,52 +488,90 @@ export default function TimeTrackerApp() {
   return (
     <div className="min-h-screen bg-slate-50 font-sans pb-24 md:pb-0 md:pl-64 relative">
       
-      {/* --- Notion 导入配置 Modal --- */}
+      {/* --- Notion 导入配置 Modal (升级版) --- */}
       {importModalOpen && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-fade-in">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
-            <div className="bg-slate-800 p-6 flex justify-between items-center text-white">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]">
+            <div className="bg-slate-800 p-5 flex justify-between items-center text-white shrink-0">
               <h3 className="font-bold text-lg flex items-center gap-2">
-                <Settings size={20}/> 配置 Notion 导入
+                <Settings size={20}/> 配置导入: {importTarget === 'projects' ? '项目库' : '任务库'}
               </h3>
               <button onClick={() => setImportModalOpen(false)} className="hover:bg-white/20 p-1 rounded transition"><X size={20}/></button>
             </div>
             
-            <div className="p-6">
-              <div className="bg-blue-50 border border-blue-100 p-4 rounded-lg mb-6 text-sm text-blue-800">
-                <p className="font-bold mb-1">正在导入: {importTarget === 'projects' ? '项目库 (一级)' : '任务库 (二级)'}</p>
-                <p>请填写您的 Notion 数据库 ID 和对应的标题属性名称，以实现精准映射。</p>
+            <div className="p-6 overflow-y-auto">
+              <div className="bg-amber-50 border border-amber-100 p-4 rounded-lg mb-6 text-sm text-amber-900 flex gap-3">
+                 <AlertTriangle className="shrink-0 mt-0.5" size={18}/>
+                 <div>
+                   <p className="font-bold">关于真实数据导入</p>
+                   <p className="mt-1">浏览器无法直接连接 Notion API (CORS 限制)。</p>
+                   <p>若要在 Canvas 预览，请使用<b>模拟模式</b>。若已部署后端(Vercel)，请切换至<b>真实 API 模式</b>。</p>
+                 </div>
               </div>
 
-              <form onSubmit={executeImport} className="space-y-4">
+              <form onSubmit={executeImport} className="space-y-5">
+                {/* 模式切换 */}
+                <div className="flex bg-slate-100 p-1 rounded-lg">
+                   <button type="button" onClick={() => setNotionConfig(c => ({...c, isRealMode: false}))} className={`flex-1 py-2 text-sm font-bold rounded-md transition-all ${!notionConfig.isRealMode ? 'bg-white shadow text-blue-600' : 'text-slate-500'}`}>模拟演示模式</button>
+                   <button type="button" onClick={() => setNotionConfig(c => ({...c, isRealMode: true}))} className={`flex-1 py-2 text-sm font-bold rounded-md transition-all ${notionConfig.isRealMode ? 'bg-white shadow text-purple-600' : 'text-slate-500'}`}>真实 API 模式</button>
+                </div>
+
                 <div>
                   <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Notion Database ID</label>
                   <input 
                     type="text" 
                     placeholder="例如: a8aec43384f4..." 
-                    className="w-full bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
+                    className="w-full bg-slate-50 border border-slate-200 rounded-lg px-4 py-2 outline-none focus:ring-2 focus:ring-blue-500 font-mono text-sm"
                     value={notionConfig.dbId}
                     onChange={(e) => setNotionConfig({...notionConfig, dbId: e.target.value})}
                   />
-                  <p className="text-[10px] text-slate-400 mt-1">从 Notion 页面 URL 中获取</p>
                 </div>
 
-                <div>
-                  <label className="block text-xs font-bold text-slate-500 uppercase mb-1">标题/名称 属性名 (Property Name)</label>
-                  <input 
-                    type="text" 
-                    placeholder="例如: Name, Title, 任务名称" 
-                    className="w-full bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 outline-none focus:ring-2 focus:ring-blue-500"
-                    value={notionConfig.titleProp}
-                    onChange={(e) => setNotionConfig({...notionConfig, titleProp: e.target.value})}
-                    required
-                  />
-                  <p className="text-[10px] text-slate-400 mt-1">必须与 Notion 表格中的列名完全一致 (区分大小写)</p>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-500 uppercase mb-1">标题列名 (Title)</label>
+                    <input 
+                      type="text" 
+                      placeholder="例: Name" 
+                      className="w-full bg-slate-50 border border-slate-200 rounded-lg px-4 py-2 outline-none focus:ring-2 focus:ring-blue-500"
+                      value={notionConfig.titleProp}
+                      onChange={(e) => setNotionConfig({...notionConfig, titleProp: e.target.value})}
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-500 uppercase mb-1">类型/状态列名</label>
+                    <input 
+                      type="text" 
+                      placeholder="例: Status" 
+                      className="w-full bg-slate-50 border border-slate-200 rounded-lg px-4 py-2 outline-none focus:ring-2 focus:ring-blue-500"
+                      value={notionConfig.typeProp}
+                      onChange={(e) => setNotionConfig({...notionConfig, typeProp: e.target.value})}
+                    />
+                  </div>
                 </div>
 
-                <div className="pt-4 flex gap-3">
-                  <button type="button" onClick={() => setImportModalOpen(false)} className="flex-1 py-3 text-slate-600 font-bold hover:bg-slate-100 rounded-xl transition">取消</button>
-                  <button type="submit" className="flex-1 py-3 bg-blue-600 text-white font-bold rounded-xl shadow-lg shadow-blue-200 hover:bg-blue-700 transition">开始同步</button>
+                <div className="border-t border-slate-100 pt-4 mt-2">
+                   <label className="block text-xs font-bold text-purple-600 uppercase mb-2">回写设置 (Write Back)</label>
+                   <p className="text-xs text-slate-400 mb-2">请在 Notion 中手动创建一个 <b>Number</b> 类型的列，并填入其名称：</p>
+                   <input 
+                      type="text" 
+                      placeholder="例: TimeSpent (单位:分钟)" 
+                      className="w-full bg-purple-50 border border-purple-100 rounded-lg px-4 py-2 outline-none focus:ring-2 focus:ring-purple-500"
+                      value={notionConfig.writeBackProp}
+                      onChange={(e) => setNotionConfig({...notionConfig, writeBackProp: e.target.value})}
+                    />
+                </div>
+
+                {/* 运行日志区 */}
+                <div className="bg-slate-900 text-green-400 font-mono text-xs p-3 rounded-lg h-24 overflow-y-auto whitespace-pre-wrap border border-slate-700">
+                  {importLog || '> 等待指令...'}
+                </div>
+
+                <div className="flex gap-3">
+                  <button type="submit" className={`flex-1 py-3 text-white font-bold rounded-xl shadow-lg transition ${notionConfig.isRealMode ? 'bg-purple-600 hover:bg-purple-700' : 'bg-blue-600 hover:bg-blue-700'}`}>
+                    {notionConfig.isRealMode ? '连接真实数据库' : '运行模拟导入'}
+                  </button>
                 </div>
               </form>
             </div>
@@ -554,25 +735,51 @@ export default function TimeTrackerApp() {
               {projects.map(p => {
                 const isExpanded = expandedProjects[p.id];
                 const pTasks = tasks.filter(t => t.projectId === p.id);
+                
+                // 处理拖拽放入
+                const isDropTarget = draggedTaskId && draggedTaskId !== p.id; // 简单判断，这里只要有拖拽就开始监听
+
                 return (
-                  <div key={p.id} className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+                  <div 
+                    key={p.id} 
+                    className={`bg-white rounded-xl border transition-colors shadow-sm overflow-hidden ${isDropTarget ? 'border-dashed border-blue-400 bg-blue-50' : 'border-slate-200'}`}
+                    onDragOver={handleDragOver}
+                    onDrop={(e) => handleDrop(e, p.id)}
+                  >
                     <div className="p-4 flex items-center justify-between cursor-pointer hover:bg-slate-50 transition-colors" onClick={() => setExpandedProjects(prev => ({...prev, [p.id]: !prev[p.id]}))}>
                       <div className="flex items-center gap-3">
                         {isExpanded ? <ChevronDown size={18} className="text-slate-400"/> : <ChevronRight size={18} className="text-slate-400"/>}
                         <div className={`p-2 rounded-lg ${p.notionId ? 'bg-purple-100 text-purple-600' : 'bg-slate-100 text-slate-500'}`}><Briefcase size={18}/></div>
-                        <div><div className="font-bold text-slate-700">{p.name}</div><div className="text-xs text-slate-400 flex items-center gap-2">{p.notionId ? 'Notion Linked' : 'Local Project'} • {pTasks.length} 个任务</div></div>
+                        <div>
+                           <div className="font-bold text-slate-700 flex items-center gap-2">
+                             {p.name}
+                             {p.tags && p.tags.map(tag => <span key={tag} className="text-[10px] bg-slate-200 text-slate-600 px-1.5 py-0.5 rounded-full font-normal">{tag}</span>)}
+                           </div>
+                           <div className="text-xs text-slate-400 flex items-center gap-2">{p.notionId ? 'Notion Linked' : 'Local Project'} • {pTasks.length} 个任务</div>
+                        </div>
                       </div>
                       <button onClick={(e) => { e.stopPropagation(); handleDeleteProject(p.id); }} className="text-slate-300 hover:text-red-500 p-2"><Trash2 size={16}/></button>
                     </div>
                     {isExpanded && (
                       <div className="bg-slate-50 border-t border-slate-100 p-4 pl-12 space-y-2">
                          {pTasks.map(t => (
-                           <div key={t.id} className="flex justify-between items-center text-sm group">
-                             <div className="flex items-center gap-2"><FileText size={14} className="text-slate-400"/><span className="text-slate-600">{t.name}</span>{t.notionId && <Zap size={10} className="text-green-500"/>}</div>
+                           <div 
+                             key={t.id} 
+                             className="flex justify-between items-center text-sm group p-2 rounded hover:bg-white cursor-grab active:cursor-grabbing border border-transparent hover:border-slate-200 transition-all"
+                             draggable
+                             onDragStart={(e) => handleDragStart(e, t.id)}
+                           >
+                             <div className="flex items-center gap-2">
+                               <GripVertical size={14} className="text-slate-300"/>
+                               <FileText size={14} className="text-slate-400"/>
+                               <span className="text-slate-600">{t.name}</span>
+                               {t.notionId && <Zap size={10} className="text-green-500"/>}
+                             </div>
                              <button onClick={() => handleDeleteTask(t.id)} className="text-slate-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"><Trash2 size={14}/></button>
                            </div>
                          ))}
-                         <button onClick={() => { const n = prompt("输入新任务名称:"); if(n) addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'tasks'), { projectId: p.id, name: n, notionId: null, createdAt: serverTimestamp() }); }} className="text-xs text-blue-500 hover:text-blue-700 flex items-center gap-1 mt-2 font-bold"><Plus size={12}/> 新建任务</button>
+                         {pTasks.length === 0 && <div className="text-xs text-slate-400 italic pl-6 py-2">暂无任务，拖拽任务至此或新建</div>}
+                         <button onClick={() => { const n = prompt("输入新任务名称:"); if(n) addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'tasks'), { projectId: p.id, name: n, notionId: null, createdAt: serverTimestamp() }); }} className="text-xs text-blue-500 hover:text-blue-700 flex items-center gap-1 mt-2 font-bold pl-1"><Plus size={12}/> 新建任务</button>
                       </div>
                     )}
                   </div>

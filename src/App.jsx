@@ -34,12 +34,12 @@ if (typeof __firebase_config !== 'undefined') {
 } else {
   // 本地开发配置
   firebaseConfig = {
-    apiKey: "AIzaSy... (Replace with real key)", 
-    authDomain: "your-app.firebaseapp.com",
-    projectId: "your-app",
-    storageBucket: "your-app.appspot.com",
-    messagingSenderId: "123456789",
-    appId: "1:123456789:web:abcdef"
+apiKey: "AIzaSyA4BIfAOxJqWzdzGPx900Zx2_IOQLn4-Bg",
+  authDomain: "timer-4c74c.firebaseapp.com",
+  projectId: "timer-4c74c",
+  storageBucket: "timer-4c74c.firebasestorage.app",
+  messagingSenderId: "234002025816",
+  appId: "1:234002025816:web:849120987400bd095fa92d"
   };
   appId = 'eng-timer-production';
 }

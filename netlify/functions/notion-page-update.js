@@ -1,0 +1,32 @@
+exports.handler = async function(event) {
+  if (event.httpMethod !== "POST") {
+    return { statusCode: 405, body: "Method Not Allowed" };
+  }
+
+  const NOTION_API_KEY = process.env.NOTION_API_KEY;
+  if (!NOTION_API_KEY) {
+    return { statusCode: 500, body: JSON.stringify({ error: "Missing API Key" }) };
+  }
+
+  try {
+    const { pageId, properties } = JSON.parse(event.body || "{}");
+    if (!pageId || !properties) {
+      return { statusCode: 400, body: JSON.stringify({ error: "pageId and properties are required" }) };
+    }
+
+    const res = await fetch(`https://api.notion.com/v1/pages/${pageId}`, {
+      method: "PATCH",
+      headers: {
+        "Authorization": `Bearer ${NOTION_API_KEY}`,
+        "Notion-Version": "2022-06-28",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ properties })
+    });
+
+    const data = await res.json();
+    return { statusCode: res.ok ? 200 : res.status, body: JSON.stringify(data) };
+  } catch (error) {
+    return { statusCode: 500, body: JSON.stringify({ error: error.message }) };
+  }
+};

@@ -21,10 +21,10 @@ import {
   where
 } from 'firebase/firestore';
 import { 
-  Play, Square, Clock, PieChart, Database, List, Briefcase, LogOut, KeyRound, AlertCircle, Zap, Plus, Calendar, BarChart3, ChevronRight, Trash2, FolderTree, FileText, ChevronDown, ChevronUp, Settings, X, GripVertical, AlertTriangle, Check, Search, Filter, RefreshCw
+  Play, Square, Clock, PieChart, Database, List, Briefcase, LogOut, KeyRound, AlertCircle, Zap, Plus, Calendar as CalendarIcon, BarChart3, ChevronRight, Trash2, FolderTree, FileText, ChevronDown, ChevronUp, Settings, X, GripVertical, AlertTriangle, Check, Search, Filter, RefreshCw, LayoutGrid, Table as TableIcon, Columns, ArrowRight, TrendingUp, Activity
 } from 'lucide-react';
 
-// --- 1. Firebase 配置 (保持不变) ---
+// --- 1. Firebase 配置 ---
 let firebaseConfig;
 let appId;
 
@@ -34,12 +34,12 @@ if (typeof __firebase_config !== 'undefined') {
 } else {
   // 本地开发配置
   firebaseConfig = {
- apiKey: "AIzaSyA4BIfAOxJqWzdzGPx900Zx2_IOQLn4-Bg",
-  authDomain: "timer-4c74c.firebaseapp.com",
-  projectId: "timer-4c74c",
-  storageBucket: "timer-4c74c.firebasestorage.app",
-  messagingSenderId: "234002025816",
-  appId: "1:234002025816:web:849120987400bd095fa92d"
+    apiKey: "AIzaSy... (Replace with real key)", 
+    authDomain: "your-app.firebaseapp.com",
+    projectId: "your-app",
+    storageBucket: "your-app.appspot.com",
+    messagingSenderId: "123456789",
+    appId: "1:123456789:web:abcdef"
   };
   appId = 'eng-timer-production';
 }
@@ -76,8 +76,8 @@ const AuthScreen = () => {
     <div className="min-h-screen flex items-center justify-center bg-slate-100 p-4 font-sans">
       <div className="bg-white p-8 rounded-2xl shadow-xl w-full max-w-sm text-center">
         <div className="flex justify-center mb-6 text-blue-600"><Zap size={32} fill="currentColor"/></div>
-        <h1 className="text-2xl font-bold text-slate-800 mb-2">EngTimer</h1>
-        <p className="text-sm text-slate-500 mb-8">工程时间管理系统</p>
+        <h1 className="text-2xl font-bold text-slate-800 mb-2">EngTimer Pro</h1>
+        <p className="text-sm text-slate-500 mb-8">工程项目与时间管理系统</p>
         <form onSubmit={handleAuth} className="space-y-4">
           <input type="email" required placeholder="邮箱 (Email)" className="w-full pl-4 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500" value={email} onChange={e=>setEmail(e.target.value)} />
           <input type="password" required placeholder="密码 (Password)" className="w-full pl-4 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500" value={password} onChange={e=>setPassword(e.target.value)} />
@@ -102,21 +102,18 @@ export default function TimeTrackerApp() {
   
   // 核心状态
   const [activeLog, setActiveLog] = useState(null);
-  const [view, setView] = useState('projects'); // 默认改为项目视图，更灵活
+  const [view, setView] = useState('projects'); // 'projects', 'calendar', 'dashboard', 'tasks'
+  const [subView, setSubView] = useState('board'); // 'list', 'board', 'table' (for tasks/projects)
   const [searchQuery, setSearchQuery] = useState('');
   
   // Notion Config
   const [configModalOpen, setConfigModalOpen] = useState(false);
   const [notionConfig, setNotionConfig] = useState({
-    dbId: '',
-    titleProp: 'Name',
-    statusProp: 'Status', // 用于过滤 "Done"
-    writeBackProp: 'TimeSpent', // 用于回写
-    isRealMode: true
+    dbId: '', titleProp: 'Name', statusProp: 'Status', writeBackProp: 'TimeSpent', isRealMode: true
   });
   const [importLog, setImportLog] = useState('');
 
-  // 1. Auth & Data
+  // 1. Auth & Data Listeners
   useEffect(() => {
     const initAuth = async () => {
        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
@@ -130,7 +127,6 @@ export default function TimeTrackerApp() {
 
   useEffect(() => {
     if (!user) return;
-    // 只监听 Project 和 Logs，简化数据流
     const qP = query(collection(db, 'artifacts', appId, 'users', user.uid, 'projects'));
     const subP = onSnapshot(qP, s => setProjects(s.docs.map(d => ({id: d.id, ...d.data()}))));
     
@@ -145,17 +141,10 @@ export default function TimeTrackerApp() {
 
   // --- 动作逻辑 ---
 
-  // 快捷开始/停止 (灵活交互核心)
   const toggleTimer = async (project) => {
     if (activeLog) {
-      // 如果正在计时，且点击的是同一个项目 -> 停止
-      if (activeLog.projectId === project.id) {
-        await stopTimer();
-      } else {
-        // 如果点击的是不同项目 -> 先停止当前，再开始新的 (无缝切换)
-        await stopTimer();
-        await startTimer(project);
-      }
+      if (activeLog.projectId === project.id) { await stopTimer(); } 
+      else { await stopTimer(); await startTimer(project); }
     } else {
       await startTimer(project);
     }
@@ -165,7 +154,8 @@ export default function TimeTrackerApp() {
     try {
       await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'timelogs'), {
         projectId: project.id,
-        projectName: project.name, // 冗余存储方便显示
+        projectName: project.name,
+        category: project.category || 'Uncategorized',
         startTime: serverTimestamp(),
         endTime: null
       });
@@ -175,13 +165,10 @@ export default function TimeTrackerApp() {
   const stopTimer = async () => {
     if (!activeLog) return;
     const endTime = new Date();
-    const durationMin = ((endTime - activeLog.startTime) / 1000 / 60); // 分钟
+    const durationMin = ((endTime - activeLog.startTime) / 1000 / 60);
 
     try {
-      // 1. Firebase 存档
       await updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'timelogs', activeLog.id), { endTime });
-      
-      // 2. Notion 回写 (如果项目关联了 Notion)
       const project = projects.find(p => p.id === activeLog.projectId);
       if (project?.notionId) {
         await syncToNotion(project.notionId, durationMin, project.name);
@@ -189,33 +176,22 @@ export default function TimeTrackerApp() {
     } catch (e) { console.error(e); }
   };
 
-  // 关键：统一回写逻辑
   const syncToNotion = async (pageId, durationAdd, name) => {
     if (!notionConfig.isRealMode) {
-      showToast(`[模拟] ${name}: 更新 +${durationAdd.toFixed(1)}min 到列 ${notionConfig.writeBackProp}`);
+      showToast(`[模拟] ${name}: 更新 +${durationAdd.toFixed(1)}min`);
       return;
     }
-
-    showToast(`正在同步 ${name} 数据至 Notion...`, 'loading');
-    
-    // 调用 notion-update.js
-    // 注意：本地开发时路径可能是 /.netlify/functions/notion-update
+    showToast(`正在同步 ${name}...`, 'loading');
     const endpoint = '/.netlify/functions/notion-update';
-    
     try {
       const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          pageId: pageId,
-          property: notionConfig.writeBackProp,
-          value: durationAdd
-        })
+        body: JSON.stringify({ pageId: pageId, property: notionConfig.writeBackProp, value: durationAdd })
       });
-
       if (!res.ok) throw new Error("API Error");
       const data = await res.json();
-      showToast(`同步成功! ${name} 最新累计: ${data.newValue?.toFixed(1)}`, 'success');
+      showToast(`同步成功!`, 'success');
     } catch (e) {
       showToast(`同步失败: ${e.message}`, 'error');
     }
@@ -230,80 +206,204 @@ export default function TimeTrackerApp() {
     setTimeout(() => el.remove(), 4000);
   };
 
-  // 智能导入逻辑
-  const executeImport = async (e) => {
-    e.preventDefault();
-    setImportLog('连接中...');
-    const { dbId, titleProp, statusProp, isRealMode } = notionConfig;
-
-    if (!isRealMode) {
-      // 模拟导入
-      const mock = [
-        { id: 'm1', [titleProp]: 'P-101 压缩机设计', [statusProp]: 'In Progress' },
-        { id: 'm2', [titleProp]: 'T-204 历史归档任务', [statusProp]: 'Done' }, // 这个应该被过滤
-      ];
-      await processImport(mock);
-    } else {
-      try {
-        const res = await fetch('/.netlify/functions/notion', {
-          method: 'POST',
-          body: JSON.stringify({ 
-            databaseId: dbId,
-            // 可选: 在这里加 filter payload 减少传输量，或者在前端过滤
-          })
-        });
-        if (!res.ok) throw new Error("API连接失败");
-        const data = await res.json();
-        
-        const parsed = data.results.map(p => {
-           const props = p.properties;
-           // 解析标题
-           const title = props[titleProp]?.title?.[0]?.plain_text || 'Unknown';
-           // 解析状态 (支持 Select, Status)
-           const status = props[statusProp]?.select?.name || props[statusProp]?.status?.name || '';
-           return { id: p.id, [titleProp]: title, [statusProp]: status };
-        });
-        
-        await processImport(parsed);
-      } catch (e) {
-        setImportLog('错误: ' + e.message);
-      }
-    }
-  };
-
-  const processImport = async (items) => {
-    let count = 0;
-    let skipped = 0;
-    const { titleProp, statusProp } = notionConfig;
-
-    for (const item of items) {
-      const status = item[statusProp] || '';
-      // 过滤逻辑：如果状态包含 "Done", "Completed", "已完成"，则跳过
-      if (['Done', 'Completed', '已完成', 'Archived'].includes(status)) {
-        skipped++;
-        continue;
-      }
-      
-      const name = item[titleProp];
-      // 避免重复
-      if (!projects.find(p => p.notionId === item.id)) {
-        await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'projects'), {
-          name, 
-          notionId: item.id,
-          status: status,
-          createdAt: serverTimestamp()
-        });
-        count++;
-      }
-    }
-    setImportLog(`导入完成: 新增 ${count} 个, 跳过(已完成) ${skipped} 个。`);
-    setTimeout(() => setConfigModalOpen(false), 1500);
-  };
-
-  // --- 过滤项目 (搜索) ---
+  // --- 过滤 ---
   const filteredProjects = useMemo(() => {
     return projects.filter(p => p.name.toLowerCase().includes(searchQuery.toLowerCase()));
   }, [projects, searchQuery]);
+
+  // --- 子组件: 看板视图 (Kanban) ---
+  const KanbanBoard = () => {
+    const statuses = ['To Do', 'In Progress', 'Done'];
+    return (
+      <div className="flex gap-4 overflow-x-auto pb-4 h-[calc(100vh-180px)]">
+        {statuses.map(status => (
+          <div key={status} className="min-w-[280px] bg-slate-100/50 rounded-xl p-3 flex flex-col">
+            <div className="font-bold text-slate-500 mb-3 px-2 flex justify-between">
+              {status} <span className="bg-slate-200 px-2 rounded-full text-xs py-0.5">{filteredProjects.filter(p => (p.status || 'To Do') === status).length}</span>
+            </div>
+            <div className="space-y-3 overflow-y-auto flex-1 pr-1">
+              {filteredProjects.filter(p => (p.status || 'To Do') === status).map(p => (
+                <div key={p.id} className="bg-white p-3 rounded-lg border border-slate-200 shadow-sm hover:shadow-md transition-shadow cursor-pointer group relative">
+                   <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <button onClick={(e) => {e.stopPropagation(); toggleTimer(p)}} className="p-1.5 bg-blue-100 text-blue-600 rounded-md hover:bg-blue-600 hover:text-white">
+                        {activeLog?.projectId === p.id ? <Square size={12} fill="currentColor"/> : <Play size={12} fill="currentColor"/>}
+                      </button>
+                   </div>
+                   <div className="font-bold text-slate-700 text-sm mb-1">{p.name}</div>
+                   <div className="flex gap-1 flex-wrap">
+                     <span className="text-[10px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded border border-slate-200">{p.category || 'General'}</span>
+                   </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  };
+
+  // --- 子组件: 表格视图 (Table) ---
+  const TableView = () => (
+    <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+      <table className="w-full text-sm text-left">
+        <thead className="bg-slate-50 text-slate-500 font-bold border-b border-slate-200">
+          <tr>
+            <th className="p-4">项目名称</th>
+            <th className="p-4">状态</th>
+            <th className="p-4">分类</th>
+            <th className="p-4">来源</th>
+            <th className="p-4 text-right">操作</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-slate-100">
+          {filteredProjects.map(p => (
+            <tr key={p.id} className="hover:bg-slate-50 group">
+              <td className="p-4 font-bold text-slate-700">{p.name}</td>
+              <td className="p-4"><span className="bg-slate-100 px-2 py-1 rounded text-xs">{p.status || 'To Do'}</span></td>
+              <td className="p-4 text-slate-500">{p.category || '-'}</td>
+              <td className="p-4 text-xs">
+                {p.notionId ? <span className="flex items-center gap-1 text-purple-600"><Database size={12}/> Notion</span> : <span className="text-slate-400">Local</span>}
+              </td>
+              <td className="p-4 text-right">
+                <button onClick={() => toggleTimer(p)} className="text-blue-600 hover:text-blue-800 font-bold text-xs border border-blue-200 px-3 py-1 rounded-lg hover:bg-blue-50 transition-colors">
+                  {activeLog?.projectId === p.id ? '停止' : '开始计时'}
+                </button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+
+  // --- 子组件: 日历视图 (Calendar - Notion Style) ---
+  const CalendarView = () => {
+    const [calView, setCalView] = useState('month'); // 'month', 'week'
+    const [currentDate, setCurrentDate] = useState(new Date());
+
+    const daysInMonth = (year, month) => new Date(year, month + 1, 0).getDate();
+    const firstDayOfMonth = (year, month) => new Date(year, month, 1).getDay();
+
+    const renderMonthGrid = () => {
+      const year = currentDate.getFullYear();
+      const month = currentDate.getMonth();
+      const days = daysInMonth(year, month);
+      const startDay = firstDayOfMonth(year, month); // 0 = Sunday
+      const blanks = Array(startDay).fill(null);
+      const daySlots = Array.from({length: days}, (_, i) => i + 1);
+      
+      return (
+        <div className="grid grid-cols-7 gap-px bg-slate-200 border border-slate-200 rounded-lg overflow-hidden">
+          {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(d => (
+            <div key={d} className="bg-slate-50 p-2 text-center text-xs font-bold text-slate-400 uppercase">{d}</div>
+          ))}
+          {[...blanks, ...daySlots].map((d, i) => {
+            if (!d) return <div key={`blank-${i}`} className="bg-white min-h-[100px]"></div>;
+            
+            const dateStr = `${year}-${(month+1).toString().padStart(2,'0')}-${d.toString().padStart(2,'0')}`;
+            const dayLogs = logs.filter(l => {
+               if(!l.startTime) return false;
+               const logDate = l.startTime.toISOString().split('T')[0];
+               return logDate === dateStr;
+            });
+
+            return (
+              <div key={d} className="bg-white min-h-[100px] p-2 hover:bg-slate-50 transition-colors">
+                <div className={`text-xs font-bold mb-1 ${new Date().getDate() === d && new Date().getMonth() === month ? 'text-blue-600 bg-blue-100 w-6 h-6 rounded-full flex items-center justify-center' : 'text-slate-700'}`}>{d}</div>
+                <div className="space-y-1">
+                  {dayLogs.map(l => (
+                    <div key={l.id} className="text-[10px] bg-blue-50 text-blue-700 px-1 py-0.5 rounded truncate border-l-2 border-blue-400">
+                      {l.projectName}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      );
+    };
+
+    return (
+      <div className="space-y-4">
+        <div className="flex justify-between items-center bg-white p-2 rounded-xl border border-slate-200 shadow-sm">
+           <div className="flex items-center gap-4">
+             <button onClick={() => setCurrentDate(new Date(currentDate.setMonth(currentDate.getMonth()-1)))} className="p-1 hover:bg-slate-100 rounded"><ChevronRight className="rotate-180" size={18}/></button>
+             <span className="font-bold text-lg text-slate-800">{currentDate.toLocaleString('default', { month: 'long', year: 'numeric' })}</span>
+             <button onClick={() => setCurrentDate(new Date(currentDate.setMonth(currentDate.getMonth()+1)))} className="p-1 hover:bg-slate-100 rounded"><ChevronRight size={18}/></button>
+           </div>
+           <div className="flex bg-slate-100 p-1 rounded-lg">
+             <button className="px-3 py-1 bg-white rounded shadow-sm text-xs font-bold">Month</button>
+             <button className="px-3 py-1 text-slate-500 text-xs font-bold hover:bg-white/50 rounded">Week</button>
+           </div>
+        </div>
+        {renderMonthGrid()}
+      </div>
+    );
+  };
+
+  // --- 子组件: 高级报表 (Advanced Analytics) ---
+  const AdvancedDashboard = () => {
+    // 1. 数据计算
+    const totalTime = logs.reduce((acc, l) => acc + (l.endTime ? l.endTime - l.startTime : 0), 0);
+    const totalHours = (totalTime / 3600000).toFixed(1);
+    
+    // 深度工作：连续时长 > 45分钟
+    const deepWorkLogs = logs.filter(l => l.endTime && (l.endTime - l.startTime) > 45 * 60 * 1000);
+    const deepWorkTime = deepWorkLogs.reduce((acc, l) => acc + (l.endTime - l.startTime), 0);
+    const deepWorkHours = (deepWorkTime / 3600000).toFixed(1);
+
+    return (
+      <div className="space-y-6">
+         {/* 核心指标卡 */}
+         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+           <div className="bg-blue-600 text-white p-5 rounded-2xl shadow-lg shadow-blue-200">
+             <div className="text-blue-200 text-xs font-bold uppercase mb-1">Total Hours</div>
+             <div className="text-3xl font-bold">{totalHours} <span className="text-sm font-normal">hr</span></div>
+           </div>
+           <div className="bg-purple-600 text-white p-5 rounded-2xl shadow-lg shadow-purple-200">
+             <div className="text-purple-200 text-xs font-bold uppercase mb-1 flex items-center gap-1"><Zap size={12}/> Deep Work</div>
+             <div className="text-3xl font-bold">{deepWorkHours} <span className="text-sm font-normal">hr</span></div>
+             <div className="text-[10px] mt-1 opacity-80">Sessions {'>'} 45m</div>
+           </div>
+           <div className="bg-white border border-slate-200 p-5 rounded-2xl">
+             <div className="text-slate-400 text-xs font-bold uppercase mb-1">Projects Active</div>
+             <div className="text-3xl font-bold text-slate-700">{projects.length}</div>
+           </div>
+           <div className="bg-white border border-slate-200 p-5 rounded-2xl">
+             <div className="text-slate-400 text-xs font-bold uppercase mb-1">Avg Session</div>
+             <div className="text-3xl font-bold text-slate-700">{logs.length ? (totalHours/logs.length).toFixed(1) : 0} <span className="text-sm font-normal text-slate-400">hr</span></div>
+           </div>
+         </div>
+
+         {/* 详细记录列表 */}
+         <div className="bg-white rounded-2xl border border-slate-200 p-6">
+           <h3 className="font-bold text-slate-800 mb-4 flex items-center gap-2"><List size={18}/> 最近工作明细</h3>
+           <div className="space-y-3">
+             {logs.slice(0, 8).map(l => (
+               <div key={l.id} className="flex items-center justify-between text-sm border-b border-slate-50 pb-2 last:border-0 last:pb-0">
+                 <div>
+                   <div className="font-bold text-slate-700">{l.projectName}</div>
+                   <div className="text-xs text-slate-400 flex gap-2">
+                      <span>{l.startTime?.toLocaleDateString()}</span>
+                      <span>{l.startTime?.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})} - {l.endTime?.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) || 'Now'}</span>
+                   </div>
+                 </div>
+                 <div className="text-right">
+                    <div className="font-mono font-bold text-slate-600">
+                      {l.endTime ? ((l.endTime - l.startTime)/1000/60).toFixed(0) + ' min' : 'Running'}
+                    </div>
+                    {l.endTime && (l.endTime - l.startTime) > 45*60*1000 && (
+                      <span className="text-[10px] bg-purple-100 text-purple-600 px-1 rounded">Deep Work</span>
+                    )}
+                 </div>
+               </div>
+             ))}
+           </div>
+         </div>
+      </div>
+    );
+  };
 
   // --- 辅助 UI ---
   const LiveTimer = ({ startTime }) => {
@@ -324,23 +424,23 @@ export default function TimeTrackerApp() {
   return (
     <div className="min-h-screen bg-slate-50 font-sans text-slate-900 pb-20 md:pb-0 md:pl-64">
       
-      {/* 顶部搜索栏 (随时搜索) */}
+      {/* 顶部搜索栏 */}
       <div className="fixed top-0 left-0 md:left-64 right-0 bg-white/80 backdrop-blur-md border-b border-slate-200 p-4 z-40 flex items-center justify-between gap-4">
-        <div className="flex items-center gap-3 bg-slate-100 px-4 py-2.5 rounded-xl flex-1 max-w-lg">
+        <div className="flex items-center gap-3 bg-slate-100 px-4 py-2.5 rounded-xl flex-1 max-w-lg transition-all focus-within:ring-2 focus-within:ring-blue-200">
           <Search size={18} className="text-slate-400"/>
           <input 
             className="bg-transparent outline-none w-full text-sm font-medium" 
-            placeholder="搜索项目..." 
+            placeholder="Search projects..." 
             value={searchQuery}
             onChange={e => setSearchQuery(e.target.value)}
           />
         </div>
         
-        {/* 活动计时器 (全局显示) */}
+        {/* 活动计时器 */}
         {activeLog && (
-           <div className="hidden md:flex items-center gap-4 bg-green-50 border border-green-200 px-4 py-2 rounded-xl animate-fade-in">
+           <div className="hidden md:flex items-center gap-4 bg-green-50 border border-green-200 px-4 py-2 rounded-xl animate-fade-in shadow-sm">
              <div className="flex flex-col">
-               <span className="text-[10px] text-green-600 font-bold uppercase tracking-wider">Active</span>
+               <span className="text-[10px] text-green-600 font-bold uppercase tracking-wider flex items-center gap-1"><Activity size={10}/> Focusing</span>
                <span className="text-xs font-bold text-slate-700 truncate max-w-[120px]">{activeLog.projectName}</span>
              </div>
              <LiveTimer startTime={activeLog.startTime} />
@@ -349,170 +449,66 @@ export default function TimeTrackerApp() {
         )}
       </div>
 
-      {/* 配置弹窗 */}
-      {configModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
-          <div className="bg-white w-full max-w-lg rounded-2xl shadow-2xl overflow-hidden">
-            <div className="bg-slate-900 text-white p-4 flex justify-between items-center">
-              <h3 className="font-bold flex gap-2"><Settings size={18}/> 同步配置中心</h3>
-              <button onClick={() => setConfigModalOpen(false)}><X size={20}/></button>
-            </div>
-            <div className="p-6 space-y-4">
-              <div className="bg-blue-50 text-blue-800 text-xs p-3 rounded-lg border border-blue-100">
-                <p>1. 只要填写一次，系统会自动处理读取和反写。</p>
-                <p>2. "已完成"的项目将自动被过滤。</p>
-              </div>
-              
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="text-xs font-bold text-slate-500 uppercase">Database ID</label>
-                  <input className="input-std" value={notionConfig.dbId} onChange={e=>setNotionConfig({...notionConfig, dbId: e.target.value})} placeholder="Notion URL ID" />
-                </div>
-                <div>
-                   <label className="text-xs font-bold text-slate-500 uppercase">标题列名</label>
-                   <input className="input-std" value={notionConfig.titleProp} onChange={e=>setNotionConfig({...notionConfig, titleProp: e.target.value})} placeholder="e.g. Name" />
-                </div>
-                <div>
-                   <label className="text-xs font-bold text-slate-500 uppercase">状态列名 (用于过滤)</label>
-                   <input className="input-std" value={notionConfig.statusProp} onChange={e=>setNotionConfig({...notionConfig, statusProp: e.target.value})} placeholder="e.g. Status" />
-                </div>
-                <div>
-                   <label className="text-xs font-bold text-purple-600 uppercase">回写时间列名</label>
-                   <input className="input-std border-purple-200 bg-purple-50" value={notionConfig.writeBackProp} onChange={e=>setNotionConfig({...notionConfig, writeBackProp: e.target.value})} placeholder="e.g. TimeSpent" />
-                </div>
-              </div>
-
-              <div className="flex items-center gap-2 text-sm text-slate-600 cursor-pointer" onClick={()=>setNotionConfig(c=>({...c, isRealMode: !c.isRealMode}))}>
-                <div className={`w-10 h-6 rounded-full p-1 transition-colors ${notionConfig.isRealMode ? 'bg-green-500' : 'bg-slate-300'}`}>
-                  <div className={`w-4 h-4 bg-white rounded-full shadow-md transform transition-transform ${notionConfig.isRealMode ? 'translate-x-4' : ''}`}></div>
-                </div>
-                <span>{notionConfig.isRealMode ? '真实 API 模式' : '模拟演示模式'}</span>
-              </div>
-
-              {importLog && <div className="text-xs font-mono bg-slate-900 text-green-400 p-2 rounded max-h-20 overflow-auto">{importLog}</div>}
-              
-              <button onClick={executeImport} className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-xl shadow-lg transition">开始全量同步</button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* 侧边栏 */}
       <nav className="fixed bottom-0 md:top-0 left-0 w-full md:w-64 bg-white border-t md:border-r border-slate-200 z-50 md:h-full flex md:flex-col p-4 shadow-2xl md:shadow-none">
         <div className="hidden md:block mb-8">
-           <h1 className="text-xl font-bold flex items-center gap-2 text-slate-800"><Clock className="text-blue-600"/> EngTimer</h1>
-           <div className="mt-4 text-xs text-slate-400">
-             Engineer: {user.email}
-           </div>
+           <h1 className="text-xl font-bold flex items-center gap-2 text-slate-800"><Clock className="text-blue-600"/> EngTimer Pro</h1>
         </div>
         
         <div className="flex md:flex-col justify-around w-full gap-2">
-           <NavBtn icon={<List/>} label="项目列表" active={view==='projects'} onClick={()=>setView('projects')} />
-           <NavBtn icon={<PieChart/>} label="统计报表" active={view==='dashboard'} onClick={()=>setView('dashboard')} />
-           <NavBtn icon={<RefreshCw/>} label="同步配置" onClick={()=>setConfigModalOpen(true)} />
+           <div className="md:mb-4">
+             <div className="hidden md:block text-xs font-bold text-slate-400 uppercase mb-2 px-3">Workspace</div>
+             <NavBtn icon={<LayoutGrid/>} label="Projects" active={view==='projects'} onClick={()=>setView('projects')} />
+             <NavBtn icon={<CalendarIcon/>} label="Calendar" active={view==='calendar'} onClick={()=>setView('calendar')} />
+             <NavBtn icon={<BarChart3/>} label="Analytics" active={view==='dashboard'} onClick={()=>setView('dashboard')} />
+           </div>
         </div>
         
         <div className="hidden md:block mt-auto">
-          <button onClick={() => signOut(auth)} className="flex items-center gap-2 text-red-500 hover:bg-red-50 w-full p-3 rounded-xl transition"><LogOut size={18}/> 退出</button>
+          <button onClick={() => signOut(auth)} className="flex items-center gap-2 text-red-500 hover:bg-red-50 w-full p-3 rounded-xl transition"><LogOut size={18}/> Sign Out</button>
         </div>
       </nav>
 
       {/* 主内容区 */}
-      <main className="pt-20 px-4 md:px-8 pb-8 max-w-5xl mx-auto">
+      <main className="pt-24 px-4 md:px-8 pb-8 max-w-6xl mx-auto">
         
-        {/* 项目列表视图 */}
+        {/* 项目视图: 包含 List/Board/Table 子视图切换 */}
         {view === 'projects' && (
-          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-             {/* 手机端可见的 Active Timer 卡片 */}
-             {activeLog && (
-               <div className="md:hidden col-span-full bg-slate-900 text-white p-4 rounded-2xl shadow-xl flex items-center justify-between sticky top-20 z-30">
-                 <div>
-                   <div className="text-[10px] opacity-60 uppercase font-bold">Current Task</div>
-                   <div className="font-bold truncate max-w-[150px]">{activeLog.projectName}</div>
-                 </div>
-                 <div className="flex items-center gap-3">
-                    <LiveTimer startTime={activeLog.startTime}/>
-                    <button onClick={stopTimer} className="bg-red-500 p-2 rounded-lg"><Square size={16} fill="currentColor"/></button>
-                 </div>
-               </div>
-             )}
-
-             {/* 本地新建项目卡片 */}
-             <div 
-               onClick={() => {
-                 const n = prompt("输入新项目名称:");
-                 if(n) addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'projects'), {name: n, createdAt: serverTimestamp()});
-               }}
-               className="border-2 border-dashed border-slate-300 rounded-2xl flex flex-col items-center justify-center p-6 cursor-pointer hover:border-blue-500 hover:bg-blue-50 transition-colors text-slate-400 hover:text-blue-600 group h-32"
-             >
-               <Plus size={32} className="group-hover:scale-110 transition-transform"/>
-               <span className="text-sm font-bold mt-2">新建项目</span>
+          <div className="animate-fade-in">
+             <div className="flex justify-between items-center mb-6">
+                <div className="flex bg-slate-200 p-1 rounded-lg">
+                   <button onClick={() => setSubView('board')} className={`px-3 py-1.5 rounded-md text-sm font-bold flex items-center gap-2 transition-all ${subView === 'board' ? 'bg-white shadow text-slate-800' : 'text-slate-500'}`}><Columns size={16}/> Board</button>
+                   <button onClick={() => setSubView('table')} className={`px-3 py-1.5 rounded-md text-sm font-bold flex items-center gap-2 transition-all ${subView === 'table' ? 'bg-white shadow text-slate-800' : 'text-slate-500'}`}><TableIcon size={16}/> Table</button>
+                </div>
+                
+                <button 
+                  onClick={() => { const n = prompt("New Project Name:"); if(n) addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'projects'), {name: n, status: 'To Do', category: 'General', createdAt: serverTimestamp()}); }}
+                  className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-xl font-bold flex items-center gap-2 shadow-lg shadow-blue-200 transition"
+                >
+                  <Plus size={18}/> New Project
+                </button>
              </div>
 
-             {/* 项目卡片列表 */}
-             {filteredProjects.map(p => {
-               const isActive = activeLog?.projectId === p.id;
-               return (
-                 <div 
-                   key={p.id} 
-                   className={`relative group bg-white rounded-2xl p-5 border transition-all hover:shadow-lg cursor-pointer flex flex-col justify-between h-32 ${isActive ? 'border-green-500 ring-1 ring-green-500 bg-green-50/30' : 'border-slate-200 hover:border-blue-300'}`}
-                 >
-                    {/* 快捷播放遮罩 (核心交互) */}
-                    <div 
-                      onClick={() => toggleTimer(p)}
-                      className="absolute inset-0 bg-white/0 group-hover:bg-white/10 z-10 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity backdrop-blur-[1px]"
-                    >
-                       <div className={`p-4 rounded-full shadow-2xl transform scale-75 group-hover:scale-100 transition-transform ${isActive ? 'bg-red-500 text-white' : 'bg-blue-600 text-white'}`}>
-                          {isActive ? <Square size={24} fill="currentColor"/> : <Play size={24} fill="currentColor" className="ml-1"/>}
-                       </div>
-                    </div>
-
-                    <div className="flex justify-between items-start">
-                       <div className={`p-2 rounded-lg ${p.notionId ? 'bg-purple-100 text-purple-600' : 'bg-slate-100 text-slate-500'}`}>
-                         {p.notionId ? <Database size={18}/> : <Briefcase size={18}/>}
-                       </div>
-                       {isActive && <div className="px-2 py-0.5 bg-green-100 text-green-700 text-[10px] font-bold uppercase rounded-full animate-pulse">Running</div>}
-                    </div>
-
-                    <div>
-                      <h3 className="font-bold text-slate-800 text-lg truncate">{p.name}</h3>
-                      <div className="text-xs text-slate-400 mt-1 flex gap-2">
-                        <span>{p.notionId ? 'Notion Linked' : 'Local'}</span>
-                        {p.status && <span className="bg-slate-100 px-1 rounded">{p.status}</span>}
-                      </div>
-                    </div>
-                 </div>
-               )
-             })}
+             {subView === 'board' ? <KanbanBoard /> : <TableView />}
           </div>
         )}
 
-        {/* 报表视图 (保留核心功能) */}
-        {view === 'dashboard' && (
-           <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
-             <h2 className="text-xl font-bold mb-4 flex items-center gap-2"><BarChart3/> 简报</h2>
-             <div className="space-y-4">
-               {projects.map(p => {
-                 const pLogs = logs.filter(l => l.projectId === p.id && l.endTime);
-                 const total = pLogs.reduce((acc, l) => acc + (l.endTime - l.startTime), 0);
-                 if (total === 0) return null;
-                 const hrs = (total / 3600000).toFixed(1);
-                 return (
-                   <div key={p.id}>
-                     <div className="flex justify-between text-sm mb-1">
-                       <span>{p.name}</span>
-                       <span className="font-mono">{hrs} hr</span>
-                     </div>
-                     <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden">
-                       <div className="bg-blue-600 h-full" style={{width: `${Math.min((total/3600000)*10, 100)}%`}}></div>
-                     </div>
-                   </div>
-                 )
-               })}
-               {logs.length === 0 && <div className="text-center text-slate-400 py-10">暂无数据</div>}
-             </div>
+        {/* 日历视图 */}
+        {view === 'calendar' && (
+           <div className="animate-fade-in">
+             <h2 className="text-2xl font-bold text-slate-800 mb-6 flex items-center gap-2"><CalendarIcon className="text-blue-600"/> Schedule</h2>
+             <CalendarView />
            </div>
         )}
+
+        {/* 报表视图 */}
+        {view === 'dashboard' && (
+           <div className="animate-fade-in">
+             <h2 className="text-2xl font-bold text-slate-800 mb-6 flex items-center gap-2"><TrendingUp className="text-blue-600"/> Insights</h2>
+             <AdvancedDashboard />
+           </div>
+        )}
+
       </main>
 
       <style>{`
@@ -524,7 +520,7 @@ export default function TimeTrackerApp() {
 }
 
 const NavBtn = ({icon, label, active, onClick}) => (
-  <button onClick={onClick} className={`flex items-center gap-3 p-3 rounded-xl transition-all w-full text-left ${active ? 'bg-blue-50 text-blue-600 font-bold' : 'text-slate-500 hover:bg-slate-50'}`}>
+  <button onClick={onClick} className={`flex items-center gap-3 p-3 rounded-xl transition-all w-full text-left ${active ? 'bg-slate-900 text-white font-bold shadow-lg' : 'text-slate-500 hover:bg-slate-100'}`}>
     {icon} <span className="hidden md:inline text-sm">{label}</span>
   </button>
 );

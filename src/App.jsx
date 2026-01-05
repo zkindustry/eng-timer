@@ -1,5 +1,5 @@
 ﻿
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { initializeApp } from 'firebase/app';
 import {
   getAuth,
@@ -99,6 +99,25 @@ const normalizeNotionId = (input) => {
   return input.trim();
 };
 
+const getBeijingNow = () => new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Shanghai' }));
+
+const normalizeStatus = (status = '') => {
+  const map = {
+    '进行中': 'In Progress',
+    '正在进行': 'In Progress',
+    '暂停': 'Paused',
+    '挂起': 'Paused',
+    '完成': 'Done',
+    '已完成': 'Done',
+    '规划中': 'Planned',
+    '计划中': 'Planned'
+  };
+  if (!status) return 'To Do';
+  return map[status] || status;
+};
+
+const statusOptions = ['To Do', 'In Progress', 'Paused', 'Planned', 'Done'];
+
 // --- 2. Auth Screen ---
 const AuthScreen = () => {
   const [email, setEmail] = useState('');
@@ -166,8 +185,14 @@ export default function TimeTrackerApp() {
   const [projectModalOpen, setProjectModalOpen] = useState(false);
   const [taskModalOpen, setTaskModalOpen] = useState(false);
   const [projectForm, setProjectForm] = useState({ id: null, name: '', status: 'To Do', category: 'General', notionId: null, notionDatabaseId: '', targetDbId: '', isOtherBucket: false });
-  const [taskForm, setTaskForm] = useState({ id: null, title: '', status: 'To Do', projectId: '', projectName: '', projectNotionId: null, notionId: null, notionDatabaseId: '', targetDbId: '' });
+  const [taskForm, setTaskForm] = useState({ id: null, title: '', status: 'To Do', projectId: '', projectIds: [], projectName: '', projectNotionId: null, notionId: null, notionDatabaseId: '', targetDbId: '' });
 
+  const [boardGroupBy, setBoardGroupBy] = useState('status'); // 'status' | 'category'
+  const [selectedProjectIds, setSelectedProjectIds] = useState([]);
+  const [selectedTaskIds, setSelectedTaskIds] = useState([]);
+  const [selectedLogIds, setSelectedLogIds] = useState([]);
+  const [editingProjectId, setEditingProjectId] = useState(null);
+  const [editingTaskId, setEditingTaskId] = useState(null);
   const [dragTask, setDragTask] = useState(null);
 
   // 1. Auth & Data Listeners
@@ -216,25 +241,187 @@ export default function TimeTrackerApp() {
     loadConfig();
   }, [user]);
 
+  // 保证只有一个“其他”项目存在
+  useEffect(() => {
+    if (!user) return;
+    const others = projects.filter(p => p.isOtherBucket);
+    if (others.length > 1) {
+      others.slice(1).forEach(extra => {
+        deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'projects', extra.id)).catch(() => {});
+      });
+    }
+  }, [projects, user]);
+
   // --- Helpers ---
   const showToast = (msg, type = 'info') => {
     const el = document.createElement('div');
     const color = type === 'success' ? 'bg-green-600' : type === 'error' ? 'bg-red-600' : 'bg-slate-800';
     el.className = `fixed bottom-4 right-4 ${color} text-white px-4 py-3 rounded-lg shadow-xl z-[999] animate-fade-in text-sm font-bold flex items-center gap-2`;
-    el.innerHTML = type === 'loading' ? `<span class="animate-spin">?</span> ${msg}` : msg;
+    el.innerHTML = type === 'loading' ? `<span class="animate-spin">⏳</span> ${msg}` : msg;
     document.body.appendChild(el);
     setTimeout(() => el.remove(), 3500);
   };
 
+  const enhancedProjects = useMemo(() => projects.map(p => ({
+    ...p,
+    statusNormalized: normalizeStatus(p.status || 'To Do')
+  })), [projects]);
+
+  const enhancedTasks = useMemo(() => tasks.map(t => ({
+    ...t,
+    statusNormalized: normalizeStatus(t.status || 'To Do'),
+    projectIds: t.projectIds && t.projectIds.length ? t.projectIds : (t.projectId ? [t.projectId] : [])
+  })), [tasks]);
+
   const filteredProjects = useMemo(() => {
-    return projects.filter(p => (p.name || '').toLowerCase().includes(searchQuery.toLowerCase()));
-  }, [projects, searchQuery]);
+    return enhancedProjects.filter(p => (p.name || '').toLowerCase().includes(searchQuery.toLowerCase()));
+  }, [enhancedProjects, searchQuery]);
 
   const filteredTasks = useMemo(() => {
-    return tasks
+    return enhancedTasks
       .filter(t => (t.title || '').toLowerCase().includes(taskSearch.toLowerCase()))
-      .filter(t => taskStatusFilter === 'all' ? true : (t.status || '').toLowerCase() === taskStatusFilter.toLowerCase());
-  }, [tasks, taskSearch, taskStatusFilter]);
+      .filter(t => taskStatusFilter === 'all' ? true : (t.statusNormalized || '').toLowerCase() === taskStatusFilter.toLowerCase());
+  }, [enhancedTasks, taskSearch, taskStatusFilter]);
+
+  const toggleSelectProject = (id) => {
+    setSelectedProjectIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+  };
+  const toggleSelectTask = (id) => {
+    setSelectedTaskIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+  };
+  const toggleSelectLog = (id) => {
+    setSelectedLogIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+  };
+
+  const cycleStatus = (current) => {
+    const normalized = normalizeStatus(current);
+    const idx = statusOptions.findIndex(s => s.toLowerCase() === normalized.toLowerCase());
+    const next = idx >= 0 ? statusOptions[(idx + 1) % statusOptions.length] : statusOptions[0];
+    return next;
+  };
+
+  const pushProjectToNotion = async (project, dataPatch) => {
+    if (!notionConfig.isRealMode || !project.notionId) return;
+    const dbConf = notionConfig.projectDatabases.find(d => d.id === project.notionDatabaseId) || notionConfig.projectDatabases.find(d => d.id);
+    if (!dbConf) return;
+    const properties = {};
+    if (dataPatch.name !== undefined) properties[dbConf.titleProp] = { title: [{ text: { content: dataPatch.name } }] };
+    if (dataPatch.status !== undefined) properties[dbConf.statusProp] = { select: { name: dataPatch.status } };
+    if (dataPatch.category !== undefined) properties[dbConf.categoryProp] = { select: { name: dataPatch.category } };
+    if (Object.keys(properties).length === 0) return;
+    await fetch('/.netlify/functions/notion-page-update', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pageId: project.notionId, properties })
+    });
+  };
+
+  const pushTaskToNotion = async (task, dataPatch, projectIdsForRelation = null) => {
+    if (!notionConfig.isRealMode || !task.notionId) return;
+    const dbConf = notionConfig.taskDatabases.find(d => d.id === task.notionDatabaseId) || notionConfig.taskDatabases.find(d => d.id);
+    if (!dbConf) return;
+    const properties = {};
+    if (dataPatch.title !== undefined) properties[dbConf.titleProp] = { title: [{ text: { content: dataPatch.title } }] };
+    if (dataPatch.status !== undefined) properties[dbConf.statusProp] = { select: { name: dataPatch.status } };
+    if (projectIdsForRelation) {
+      const relations = projectIdsForRelation
+        .map(pid => projects.find(p => p.id === pid)?.notionId)
+        .filter(Boolean)
+        .map(id => ({ id }));
+      properties[dbConf.projectProp] = { relation: relations };
+    }
+    if (Object.keys(properties).length === 0) return;
+    await fetch('/.netlify/functions/notion-page-update', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pageId: task.notionId, properties })
+    });
+  };
+
+  const updateProjectInline = async (project, patch) => {
+    await updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'projects', project.id), { ...patch, updatedAt: serverTimestamp() });
+    await pushProjectToNotion(project, patch);
+  };
+
+  const updateTaskInline = async (task, patch, relationIds) => {
+    const updatePayload = { ...patch, updatedAt: serverTimestamp() };
+    if (relationIds && relationIds.length) {
+      const primary = projects.find(p => p.id === relationIds[0]);
+      updatePayload.projectIds = relationIds;
+      if (primary) {
+        updatePayload.projectId = primary.id;
+        updatePayload.projectName = primary.name;
+        updatePayload.projectNotionId = primary.notionId || null;
+      }
+    }
+    await updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'tasks', task.id), updatePayload);
+    await pushTaskToNotion(task, patch, relationIds || task.projectIds || [task.projectId]);
+  };
+
+  const clearAllTasks = async () => {
+    if (!window.confirm('清空所有任务？此操作不可恢复')) return;
+    await Promise.all(tasks.map(t => deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'tasks', t.id))));
+    setSelectedTaskIds([]);
+  };
+
+  const clearAllProjects = async () => {
+    if (!window.confirm('清空所有项目（保留一个其他）？')) return;
+    const others = projects.filter(p => p.isOtherBucket);
+    const keep = others[0];
+    const deletable = projects.filter(p => !p.isOtherBucket);
+    await Promise.all(deletable.map(p => deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'projects', p.id))));
+    const other = keep || await ensureOtherProject();
+    await Promise.all(tasks.map(t => updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'tasks', t.id), {
+      projectId: other.id,
+      projectIds: [other.id],
+      projectName: other.name,
+      projectNotionId: other.notionId || null
+    })));
+    setSelectedProjectIds([]);
+  };
+
+  const clearAllLogs = async () => {
+    if (!window.confirm('清空所有记录？此操作不可恢复')) return;
+    await Promise.all(logs.map(l => deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'timelogs', l.id))));
+    setSelectedLogIds([]);
+  };
+
+  const deleteSelectedProjects = async () => {
+    if (!selectedProjectIds.length) return;
+    if (!window.confirm('删除选中的项目？')) return;
+    for (const id of selectedProjectIds) {
+      const proj = projects.find(p => p.id === id);
+      if (proj?.isOtherBucket) continue;
+      await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'projects', id));
+      const other = await ensureOtherProject();
+      const related = tasks.filter(t => (t.projectIds || [t.projectId]).includes(id));
+      await Promise.all(related.map(t => updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'tasks', t.id), {
+        projectId: other.id,
+        projectIds: [other.id],
+        projectName: other.name,
+        projectNotionId: other.notionId || null
+      })));
+    }
+    setSelectedProjectIds([]);
+  };
+
+  const deleteSelectedTasks = async () => {
+    if (!selectedTaskIds.length) return;
+    if (!window.confirm('删除选中的任务？')) return;
+    for (const id of selectedTaskIds) {
+      await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'tasks', id));
+    }
+    setSelectedTaskIds([]);
+  };
+
+  const deleteSelectedLogs = async () => {
+    if (!selectedLogIds.length) return;
+    if (!window.confirm('删除选中的记录？')) return;
+    for (const id of selectedLogIds) {
+      await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'timelogs', id));
+    }
+    setSelectedLogIds([]);
+  };
 
   const ensureOtherProject = async () => {
     const existing = projects.find(p => p.isOtherBucket);
@@ -330,7 +517,7 @@ export default function TimeTrackerApp() {
 
     const payload = {
       name: projectForm.name.trim(),
-      status: projectForm.status || 'To Do',
+      status: normalizeStatus(projectForm.status || 'To Do'),
       category: projectForm.category || 'General',
       notionId: projectForm.notionId || null,
       notionDatabaseId: projectForm.notionDatabaseId || projectForm.targetDbId || '',
@@ -396,6 +583,7 @@ export default function TimeTrackerApp() {
       const related = tasks.filter(t => t.projectId === project.id);
       await Promise.all(related.map(t => updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'tasks', t.id), {
         projectId: other.id,
+        projectIds: [other.id],
         projectName: other.name,
         projectNotionId: other.notionId || null
       })));
@@ -417,6 +605,7 @@ export default function TimeTrackerApp() {
       title: task?.title || '',
       status: task?.status || 'To Do',
       projectId: chosenProj?.id || '',
+      projectIds: task?.projectIds && task.projectIds.length ? task.projectIds : (projectTarget ? [projectTarget] : []),
       projectName: chosenProj?.name || '',
       projectNotionId: chosenProj?.notionId || null,
       notionId: task?.notionId || null,
@@ -430,14 +619,21 @@ export default function TimeTrackerApp() {
     e?.preventDefault();
     if (!taskForm.title.trim()) return;
     const targetDb = notionConfig.taskDatabases.find(d => d.id === taskForm.targetDbId);
-    const project = projects.find(p => p.id === taskForm.projectId) || await ensureOtherProject();
+    const selectedIds = taskForm.projectIds && taskForm.projectIds.length ? taskForm.projectIds : (taskForm.projectId ? [taskForm.projectId] : []);
+    let projectList = projects.filter(p => selectedIds.includes(p.id));
+    if (!projectList.length) {
+      const fallback = await ensureOtherProject();
+      projectList = [fallback];
+    }
+    const primary = projectList[0];
 
     const payload = {
       title: taskForm.title.trim(),
-      status: taskForm.status || 'To Do',
-      projectId: project.id,
-      projectName: project.name,
-      projectNotionId: project.notionId || null,
+      status: normalizeStatus(taskForm.status || 'To Do'),
+      projectId: primary.id,
+      projectIds: projectList.map(p => p.id),
+      projectName: primary.name,
+      projectNotionId: primary.notionId || null,
       notionId: taskForm.notionId || null,
       notionDatabaseId: taskForm.notionDatabaseId || taskForm.targetDbId || '',
       updatedAt: serverTimestamp()
@@ -456,7 +652,7 @@ export default function TimeTrackerApp() {
         const properties = {
           [targetDb.titleProp]: { title: [{ text: { content: payload.title } }] },
           [targetDb.statusProp]: { select: { name: payload.status } },
-          [targetDb.projectProp]: { relation: payload.projectNotionId ? [{ id: payload.projectNotionId }] : [] }
+          [targetDb.projectProp]: { relation: projectList.map(p => p.notionId).filter(Boolean).map(id => ({ id })) }
         };
 
         if (payload.notionId) {
@@ -506,6 +702,7 @@ export default function TimeTrackerApp() {
     try {
       await updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'tasks', dragTask.id), {
         projectId: targetProject.id,
+        projectIds: [targetProject.id],
         projectName: targetProject.name,
         projectNotionId: targetProject.notionId || null,
         updatedAt: serverTimestamp()
@@ -566,7 +763,9 @@ export default function TimeTrackerApp() {
       for (const page of (data.results || [])) {
         const props = page.properties || {};
         const title = props[dbConf.titleProp]?.title?.[0]?.plain_text || 'Untitled';
-        const status = props[dbConf.statusProp]?.select?.name || props[dbConf.statusProp]?.status?.name || 'To Do';
+        const rawStatus = props[dbConf.statusProp]?.select?.name || props[dbConf.statusProp]?.status?.name || 'To Do';
+        const status = normalizeStatus(rawStatus);
+        if (status === 'Done') continue; // skip completed
         const category = props[dbConf.categoryProp]?.select?.name || props[dbConf.categoryProp]?.multi_select?.[0]?.name || 'General';
 
         const existing = projects.find(p => p.notionId === page.id);
@@ -604,18 +803,24 @@ export default function TimeTrackerApp() {
       for (const page of (data.results || [])) {
         const props = page.properties || {};
         const title = props[dbConf.titleProp]?.title?.[0]?.plain_text || 'Untitled';
-        const status = props[dbConf.statusProp]?.select?.name || props[dbConf.statusProp]?.status?.name || 'To Do';
-        const relationId = props[dbConf.projectProp]?.relation?.[0]?.id;
-        const matchedProject = relationId ? projects.find(p => p.notionId === relationId) : null;
-        const targetProject = matchedProject || otherProject;
+        const rawStatus = props[dbConf.statusProp]?.select?.name || props[dbConf.statusProp]?.status?.name || 'To Do';
+        const status = normalizeStatus(rawStatus);
+        if (status === 'Done') continue; // ignore completed
+        const relations = props[dbConf.projectProp]?.relation || [];
+        const matchedProjects = relations
+          .map(r => projects.find(p => p.notionId === r.id))
+          .filter(Boolean);
+        const targetProjects = matchedProjects.length ? matchedProjects : [otherProject];
+        const primary = targetProjects[0];
 
         const existing = tasks.find(t => t.notionId === page.id);
         const payload = {
           title,
           status,
-          projectId: targetProject.id,
-          projectName: targetProject.name,
-          projectNotionId: targetProject.notionId || null,
+          projectId: primary.id,
+          projectIds: targetProjects.map(p => p.id),
+          projectName: primary.name,
+          projectNotionId: primary.notionId || null,
           notionId: page.id,
           notionDatabaseId: dbConf.id
         };
@@ -649,17 +854,24 @@ export default function TimeTrackerApp() {
 
   // --- UI Components ---
   const KanbanBoard = () => {
-    const statuses = ['To Do', 'In Progress', 'Done'];
+    const groupKeys = useMemo(() => {
+      if (boardGroupBy === 'category') {
+        const cats = Array.from(new Set(filteredProjects.map(p => p.category || 'General')));
+        return cats.length ? cats : ['General'];
+      }
+      const sts = Array.from(new Set(filteredProjects.map(p => p.statusNormalized || 'To Do')));
+      return sts.length ? sts : statusOptions;
+    }, [boardGroupBy, filteredProjects]);
     return (
       <div className="flex gap-4 overflow-x-auto pb-4 h-[calc(100vh-220px)]">
-        {statuses.map(status => (
+        {groupKeys.map(status => (
           <div key={status} className="min-w-[280px] bg-slate-100/50 rounded-xl p-3 flex flex-col">
             <div className="font-bold text-slate-500 mb-3 px-2 flex justify-between items-center">
               <span>{status}</span>
-              <span className="bg-slate-200 px-2 rounded-full text-xs py-0.5">{filteredProjects.filter(p => (p.status || 'To Do') === status).length}</span>
+              <span className="bg-slate-200 px-2 rounded-full text-xs py-0.5">{filteredProjects.filter(p => (boardGroupBy === 'category' ? (p.category || 'General') : (p.statusNormalized || 'To Do')) === status).length}</span>
             </div>
             <div className="space-y-3 overflow-y-auto flex-1 pr-1">
-              {filteredProjects.filter(p => (p.status || 'To Do') === status).map(p => (
+              {filteredProjects.filter(p => (boardGroupBy === 'category' ? (p.category || 'General') : (p.statusNormalized || 'To Do')) === status).map(p => (
                 <div key={p.id} className="bg-white p-3 rounded-lg border border-slate-200 shadow-sm hover:shadow-md transition-shadow cursor-pointer group relative">
                   <div className="absolute top-2 right-2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                     <button onClick={(e) => { e.stopPropagation(); openProjectModal(p); }} className="p-1.5 bg-slate-100 text-slate-600 rounded-md hover:bg-slate-800 hover:text-white">
@@ -672,8 +884,13 @@ export default function TimeTrackerApp() {
                       {activeLog?.projectId === p.id ? <Square size={12} fill="currentColor" /> : <Play size={12} fill="currentColor" />}
                     </button>
                   </div>
-                  <div className="font-bold text-slate-700 text-sm mb-1">{p.name}</div>
+                  <div className="font-bold text-slate-700 text-sm mb-1">{editingProjectId === p.id ? (
+                    <input autoFocus defaultValue={p.name} className="border rounded px-2 py-1 text-sm w-full" onBlur={(e) => { updateProjectInline(p, { name: e.target.value.trim() || p.name }); setEditingProjectId(null); }} onKeyDown={(e) => { if (e.key === 'Enter') e.target.blur(); if (e.key === 'Escape') setEditingProjectId(null); }} />
+                  ) : (
+                    <span onClick={() => setEditingProjectId(p.id)} className="cursor-text">{p.name}</span>
+                  )}</div>
                   <div className="flex gap-1 flex-wrap">
+                    <button onClick={() => updateProjectInline(p, { status: cycleStatus(p.status) })} className="text-[10px] bg-slate-900 text-white px-1.5 py-0.5 rounded border border-slate-200 hover:bg-slate-700">{p.statusNormalized || 'To Do'}</button>
                     <span className="text-[10px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded border border-slate-200">{p.category || 'General'}</span>
                     {p.notionId && <span className="text-[10px] bg-purple-50 text-purple-600 px-1.5 py-0.5 rounded border border-purple-100">Notion</span>}
                   </div>
@@ -691,6 +908,7 @@ export default function TimeTrackerApp() {
       <table className="w-full text-sm text-left">
         <thead className="bg-slate-50 text-slate-500 font-bold border-b border-slate-200 sticky top-0 z-10">
           <tr>
+            <th className="p-4 w-10"><input type="checkbox" checked={selectedProjectIds.length === filteredProjects.length && filteredProjects.length > 0} onChange={(e) => setSelectedProjectIds(e.target.checked ? filteredProjects.map(p => p.id) : [])} /></th>
             <th className="p-4">项目名称</th>
             <th className="p-4">状态</th>
             <th className="p-4">分类</th>
@@ -701,8 +919,9 @@ export default function TimeTrackerApp() {
         <tbody className="divide-y divide-slate-100">
           {filteredProjects.map(p => (
             <tr key={p.id} className="hover:bg-slate-50 group">
-              <td className="p-4 font-bold text-slate-700">{p.name}</td>
-              <td className="p-4"><span className="bg-slate-100 px-2 py-1 rounded text-xs">{p.status || 'To Do'}</span></td>
+              <td className="p-4"><input type="checkbox" checked={selectedProjectIds.includes(p.id)} onChange={() => toggleSelectProject(p.id)} /></td>
+              <td className="p-4 font-bold text-slate-700">{editingProjectId === p.id ? <input autoFocus defaultValue={p.name} className="border rounded px-2 py-1 text-sm" onBlur={(e) => { updateProjectInline(p, { name: e.target.value.trim() || p.name }); setEditingProjectId(null); }} onKeyDown={(e) => { if (e.key === 'Enter') { e.target.blur(); } if (e.key === 'Escape') { setEditingProjectId(null); } }} /> : <span onClick={() => setEditingProjectId(p.id)} className="cursor-text">{p.name}</span>}</td>
+              <td className="p-4"><button onClick={() => updateProjectInline(p, { status: cycleStatus(p.status) })} className="bg-slate-100 px-2 py-1 rounded text-xs hover:bg-slate-200">{p.statusNormalized || 'To Do'}</button></td>
               <td className="p-4 text-slate-500">{p.category || 'General'}</td>
               <td className="p-4 text-xs">
                 {p.notionId ? <span className="flex items-center gap-1 text-purple-600"><Database size={12} /> Notion</span> : <span className="text-slate-400">Local</span>}
@@ -737,7 +956,7 @@ export default function TimeTrackerApp() {
           </div>
           <div className="flex items-center gap-2 text-sm">
             <span className="text-slate-500">状态:</span>
-            {['all', 'To Do', 'In Progress', 'Done'].map(s => (
+            {['all', ...statusOptions].map(s => (
               <button key={s} onClick={() => setTaskStatusFilter(s)} className={`px-2 py-1 rounded-md ${taskStatusFilter === s ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600'}`}>{s}</button>
             ))}
           </div>
@@ -752,7 +971,7 @@ export default function TimeTrackerApp() {
                 <div className="font-bold text-slate-700 flex items-center gap-2">
                   <Briefcase size={16} />
                   <span className="truncate">{proj.name}</span>
-                  <span className="bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full text-xs">{filteredTasks.filter(t => (t.projectId || '__other') === proj.id).length}</span>
+                  <span className="bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full text-xs">{filteredTasks.filter(t => (t.projectIds && t.projectIds.length ? t.projectIds : [t.projectId || '__other']).includes(proj.id)).length}</span>
                 </div>
                 {!proj.virtual && (
                   <div className="flex gap-1">
@@ -762,12 +981,20 @@ export default function TimeTrackerApp() {
                 )}
               </div>
               <div className="space-y-2">
-                {filteredTasks.filter(t => (t.projectId || '__other') === proj.id).map(t => (
+                {filteredTasks.filter(t => (t.projectIds && t.projectIds.length ? t.projectIds : [t.projectId || '__other']).includes(proj.id)).map(t => (
                   <div key={t.id} draggable onDragStart={() => setDragTask(t)} className="border border-slate-200 rounded-lg p-2 bg-slate-50 hover:bg-white transition shadow-sm">
                     <div className="flex justify-between items-center">
                       <div className="flex items-center gap-2">
+                        <input type="checkbox" checked={selectedTaskIds.includes(t.id)} onChange={() => toggleSelectTask(t.id)} />
                         <GripVertical size={12} className="text-slate-400" />
-                        <span className="font-bold text-sm">{t.title}</span>
+                        {editingTaskId === t.id ? (
+                          <input autoFocus defaultValue={t.title} className="border rounded px-2 py-1 text-sm"
+                            onBlur={(e) => { updateTaskInline(t, { title: e.target.value.trim() || t.title }); setEditingTaskId(null); }}
+                            onKeyDown={(e) => { if (e.key === 'Enter') e.target.blur(); if (e.key === 'Escape') setEditingTaskId(null); }}
+                          />
+                        ) : (
+                          <span className="font-bold text-sm cursor-text" onClick={() => setEditingTaskId(t.id)}>{t.title}</span>
+                        )}
                       </div>
                       <div className="flex items-center gap-1 text-slate-400">
                         <button onClick={() => openTaskModal(t)} className="p-1 hover:text-slate-900"><Pencil size={14} /></button>
@@ -775,7 +1002,7 @@ export default function TimeTrackerApp() {
                       </div>
                     </div>
                     <div className="flex items-center gap-2 mt-1">
-                      <span className="text-[10px] bg-slate-900 text-white px-2 py-0.5 rounded">{t.status || 'To Do'}</span>
+                      <button onClick={() => updateTaskInline(t, { status: cycleStatus(t.status) }, t.projectIds && t.projectIds.length ? t.projectIds : [t.projectId])} className="text-[10px] bg-slate-900 text-white px-2 py-0.5 rounded hover:bg-slate-700">{normalizeStatus(t.status || 'To Do')}</button>
                       {t.notionId && <span className="text-[10px] bg-purple-50 text-purple-600 px-1.5 py-0.5 rounded border border-purple-100">Notion</span>}
                     </div>
                   </div>
@@ -791,17 +1018,31 @@ export default function TimeTrackerApp() {
     );
   };
   const CalendarView = () => {
-    const [calMode, setCalMode] = useState('month'); // 'month', 'week', 'day'
-    const [currentDate, setCurrentDate] = useState(new Date());
+    const [calMode, setCalMode] = useState('day'); // default day view
+    const [currentDate, setCurrentDate] = useState(getBeijingNow());
+    const [nowTime, setNowTime] = useState(getBeijingNow());
+    const dayRef = useRef(null);
+
+    useEffect(() => {
+      const timer = setInterval(() => setNowTime(getBeijingNow()), 60000);
+      return () => clearInterval(timer);
+    }, []);
+
+    useEffect(() => {
+      if (calMode === 'day') {
+        setCurrentDate(getBeijingNow());
+      }
+    }, [calMode]);
 
     const daysInMonth = (year, month) => new Date(year, month + 1, 0).getDate();
     const firstDayOfMonth = (year, month) => new Date(year, month, 1).getDay();
+    const toCstDateKey = (d) => new Date(d.toLocaleString('en-US', { timeZone: 'Asia/Shanghai' })).toISOString().split('T')[0];
 
     const getLogsForDate = (date) => {
-      const dateStr = date.toISOString().split('T')[0];
+      const dateStr = toCstDateKey(date);
       return logs.filter(l => {
         if (!l.startTime) return false;
-        return l.startTime.toISOString().split('T')[0] === dateStr;
+        return toCstDateKey(l.startTime) === dateStr;
       });
     };
 
@@ -870,14 +1111,20 @@ export default function TimeTrackerApp() {
       );
     };
 
+    useEffect(() => {
+      if (calMode === 'day' && dayRef.current) {
+        const pct = ((nowTime.getHours() * 60 + nowTime.getMinutes()) / (24 * 60));
+        dayRef.current.scrollTop = Math.max(pct * dayRef.current.scrollHeight - 200, 0);
+      }
+    }, [calMode, nowTime]);
+
     const renderDayStream = () => {
       const dayLogs = getLogsForDate(currentDate);
       const hours = Array.from({ length: 24 }, (_, i) => i);
-      const now = new Date();
-      const nowPosition = ((now.getHours() * 60 + now.getMinutes()) / (24 * 60)) * 100;
+      const nowPosition = ((nowTime.getHours() * 60 + nowTime.getMinutes()) / (24 * 60)) * 100;
 
       return (
-        <div className="bg-white border border-slate-200 rounded-lg overflow-hidden h-[600px] overflow-y-auto relative">
+        <div ref={dayRef} className="bg-white border border-slate-200 rounded-lg overflow-hidden h-[600px] overflow-y-auto relative">
           {hours.map(h => (
             <div key={h} className="flex border-b border-slate-50 min-h-[60px]">
               <div className="w-16 border-r border-slate-100 p-2 text-xs text-slate-400 text-right">{h}:00</div>
@@ -968,7 +1215,10 @@ export default function TimeTrackerApp() {
             {logs.slice(0, 8).map(l => (
               <div key={l.id} className="flex items-center justify-between text-sm border-b border-slate-50 pb-2 last:border-0 last:pb-0">
                 <div>
-                  <div className="font-bold text-slate-700">{l.projectName}</div>
+                  <div className="flex items-center gap-2">
+                    <input type="checkbox" checked={selectedLogIds.includes(l.id)} onChange={() => toggleSelectLog(l.id)} />
+                    <div className="font-bold text-slate-700">{l.projectName}</div>
+                  </div>
                   <div className="text-xs text-slate-400 flex gap-2">
                     <span>{l.startTime?.toLocaleDateString()}</span>
                     <span>{l.startTime?.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} - {l.endTime?.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) || 'Now'}</span>
@@ -1196,9 +1446,24 @@ export default function TimeTrackerApp() {
               </div>
 
               <div className="flex gap-2 flex-wrap">
+                {subView === 'board' && (
+                  <div className="flex bg-slate-100 rounded-lg overflow-hidden text-xs font-bold">
+                    <button onClick={() => setBoardGroupBy('status')} className={`px-3 py-2 ${boardGroupBy === 'status' ? 'bg-slate-900 text-white' : 'text-slate-600'}`}>按状态</button>
+                    <button onClick={() => setBoardGroupBy('category')} className={`px-3 py-2 ${boardGroupBy === 'category' ? 'bg-slate-900 text-white' : 'text-slate-600'}`}>按分类</button>
+                  </div>
+                )}
                 <button onClick={() => openProjectModal()} className="bg-slate-900 hover:bg-slate-800 text-white px-4 py-2 rounded-lg flex items-center gap-2"><Plus size={16} /> 新建项目</button>
                 <button onClick={() => openTaskModal()} className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg flex items-center gap-2"><Plus size={16} /> 新建任务</button>
               </div>
+            </div>
+
+            <div className="flex flex-wrap gap-2 mb-4">
+              <button onClick={deleteSelectedProjects} className="text-xs px-3 py-2 rounded-lg border border-slate-200">删除选中项目</button>
+              <button onClick={deleteSelectedTasks} className="text-xs px-3 py-2 rounded-lg border border-slate-200">删除选中任务</button>
+              <button onClick={deleteSelectedLogs} className="text-xs px-3 py-2 rounded-lg border border-slate-200">删除选中记录</button>
+              <button onClick={clearAllProjects} className="text-xs px-3 py-2 rounded-lg border border-red-200 text-red-600">清空全部项目</button>
+              <button onClick={clearAllTasks} className="text-xs px-3 py-2 rounded-lg border border-red-200 text-red-600">清空全部任务</button>
+              <button onClick={clearAllLogs} className="text-xs px-3 py-2 rounded-lg border border-red-200 text-red-600">清空全部记录</button>
             </div>
 
             {subView === 'board' && <KanbanBoard />}
@@ -1291,12 +1556,22 @@ export default function TimeTrackerApp() {
                 </div>
                 <div>
                   <label className="text-xs font-bold text-slate-500 uppercase">所属项目</label>
-                  <select className="input-std" value={taskForm.projectId} onChange={e => {
-                    const proj = projects.find(p => p.id === e.target.value);
-                    setTaskForm(f => ({ ...f, projectId: e.target.value, projectName: proj?.name || '', projectNotionId: proj?.notionId || null }));
-                  }}>
-                    {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-                  </select>
+                  <div className="max-h-28 overflow-y-auto border border-slate-200 rounded-lg p-2 space-y-1 bg-slate-50">
+                    {projects.map(p => (
+                      <label key={p.id} className="flex items-center gap-2 text-xs">
+                        <input
+                          type="checkbox"
+                          checked={taskForm.projectIds?.includes(p.id)}
+                          onChange={() => {
+                            const exists = taskForm.projectIds?.includes(p.id);
+                            const next = exists ? taskForm.projectIds.filter(id => id !== p.id) : [...(taskForm.projectIds || []), p.id];
+                            setTaskForm(f => ({ ...f, projectIds: next, projectId: next[0] || '', projectName: (projects.find(px => px.id === (next[0] || ''))?.name) || '' }));
+                          }}
+                        />
+                        <span>{p.name}</span>
+                      </label>
+                    ))}
+                  </div>
                 </div>
               </div>
               <div>

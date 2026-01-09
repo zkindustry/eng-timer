@@ -1,5 +1,7 @@
 ﻿
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import AnalysisView from './components/AnalysisView';
+import { firebaseConfig as localConfig, appId as localAppId } from './config';
 import { initializeApp } from 'firebase/app';
 import {
   getAuth,
@@ -51,7 +53,8 @@ import {
   CalendarDays,
   Pencil,
   Save,
-  Link
+  Link,
+  Tag
 } from 'lucide-react';
 
 // --- 1. Firebase Config ---
@@ -62,15 +65,8 @@ if (typeof __firebase_config !== 'undefined') {
   firebaseConfig = JSON.parse(__firebase_config);
   appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
 } else {
-  firebaseConfig = {
-    apiKey: "AIzaSyA4BIfAOxJqWzdzGPx900Zx2_IOQLn4-Bg",
-    authDomain: "timer-4c74c.firebaseapp.com",
-    projectId: "timer-4c74c",
-    storageBucket: "timer-4c74c.firebasestorage.app",
-    messagingSenderId: "234002025816",
-    appId: "1:234002025816:web:849120987400bd095fa92d"
-  };
-  appId = 'eng-timer-production';
+  firebaseConfig = localConfig;
+  appId = localAppId;
 }
 
 const app = initializeApp(firebaseConfig);
@@ -114,6 +110,19 @@ const normalizeStatus = (status = '') => {
   };
   if (!status) return 'To Do';
   return map[status] || status;
+};
+
+const notionColors = {
+  default: '#94a3b8', // slate-400
+  gray: '#64748b', // slate-500
+  brown: '#92400e', // amber-800
+  orange: '#f97316', // orange-500
+  yellow: '#eab308', // yellow-500
+  green: '#22c55e', // green-500
+  blue: '#3b82f6', // blue-500
+  purple: '#a855f7', // purple-500
+  pink: '#ec4899', // pink-500
+  red: '#ef4444', // red-500
 };
 
 const statusOptions = ['To Do', 'In Progress', 'Paused', 'Planned', 'Done'];
@@ -176,6 +185,10 @@ export default function TimeTrackerApp() {
   const [searchQuery, setSearchQuery] = useState('');
   const [taskSearch, setTaskSearch] = useState('');
   const [taskStatusFilter, setTaskStatusFilter] = useState('all');
+
+  // Tagging State
+  const [tagModalOpen, setTagModalOpen] = useState(false);
+  const [tagForm, setTagForm] = useState({ id: null, tags: [], notes: '' });
 
   const [configModalOpen, setConfigModalOpen] = useState(false);
   const [notionConfig, setNotionConfig] = useState(defaultNotionConfig);
@@ -247,7 +260,7 @@ export default function TimeTrackerApp() {
     const others = projects.filter(p => p.isOtherBucket);
     if (others.length > 1) {
       others.slice(1).forEach(extra => {
-        deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'projects', extra.id)).catch(() => {});
+        deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'projects', extra.id)).catch(() => { });
       });
     }
   }, [projects, user]);
@@ -453,6 +466,8 @@ export default function TimeTrackerApp() {
         projectId: project.id,
         projectName: project.name,
         category: project.category || 'Uncategorized',
+        color: project.color || '#cbd5e1', // Default slate-300
+        tags: [],
         startTime: serverTimestamp(),
         endTime: null
       });
@@ -505,6 +520,7 @@ export default function TimeTrackerApp() {
       notionId: project?.notionId || null,
       notionDatabaseId: project?.notionDatabaseId || '',
       targetDbId: defaultDb,
+      color: project?.color || '#3b82f6', // Default blue-500
       isOtherBucket: !!project?.isOtherBucket
     });
     setProjectModalOpen(true);
@@ -519,6 +535,7 @@ export default function TimeTrackerApp() {
       name: projectForm.name.trim(),
       status: normalizeStatus(projectForm.status || 'To Do'),
       category: projectForm.category || 'General',
+      color: projectForm.color || '#3b82f6',
       notionId: projectForm.notionId || null,
       notionDatabaseId: projectForm.notionDatabaseId || projectForm.targetDbId || '',
       isOtherBucket: !!projectForm.isOtherBucket,
@@ -696,6 +713,30 @@ export default function TimeTrackerApp() {
     }
   };
 
+  const openTagModal = (log) => {
+    setTagForm({
+      id: log.id,
+      tags: log.tags || [],
+      notes: log.notes || ''
+    });
+    setTagModalOpen(true);
+  };
+
+  const handleSaveTags = async (e) => {
+    e?.preventDefault();
+    if (!tagForm.id) return;
+    try {
+      await updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'timelogs', tagForm.id), {
+        tags: tagForm.tags,
+        notes: tagForm.notes
+      });
+      showToast('Tags updated', 'success');
+      setTagModalOpen(false);
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  };
+
   const handleTaskDrop = async (project, virtual = false) => {
     if (!dragTask) return;
     const targetProject = virtual ? await ensureOtherProject() : project;
@@ -768,11 +809,16 @@ export default function TimeTrackerApp() {
         if (status === 'Done') continue; // skip completed
         const category = props[dbConf.categoryProp]?.select?.name || props[dbConf.categoryProp]?.multi_select?.[0]?.name || 'General';
 
+        // Attempt to extract color from Notion Select property
+        const notionColorName = props[dbConf.categoryProp]?.select?.color || props[dbConf.statusProp]?.select?.color || 'default';
+        const color = notionColors[notionColorName] || notionColors.default;
+
         const existing = projects.find(p => p.notionId === page.id);
         const payload = {
           name: title,
           status,
           category,
+          color,
           notionId: page.id,
           notionDatabaseId: dbConf.id
         };
@@ -872,7 +918,7 @@ export default function TimeTrackerApp() {
             </div>
             <div className="space-y-3 overflow-y-auto flex-1 pr-1">
               {filteredProjects.filter(p => (boardGroupBy === 'category' ? (p.category || 'General') : (p.statusNormalized || 'To Do')) === status).map(p => (
-                <div key={p.id} className="bg-white p-3 rounded-lg border border-slate-200 shadow-sm hover:shadow-md transition-shadow cursor-pointer group relative">
+                <div key={p.id} className="bg-white p-3 rounded-lg border border-slate-200 shadow-sm hover:shadow-md transition-shadow cursor-pointer group relative border-l-4" style={{ borderLeftColor: p.color || '#cbd5e1' }}>
                   <div className="absolute top-2 right-2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                     <button onClick={(e) => { e.stopPropagation(); openProjectModal(p); }} className="p-1.5 bg-slate-100 text-slate-600 rounded-md hover:bg-slate-800 hover:text-white">
                       <Pencil size={12} />
@@ -1126,7 +1172,7 @@ export default function TimeTrackerApp() {
       return (
         <div ref={dayRef} className="bg-white border border-slate-200 rounded-lg overflow-hidden h-[600px] overflow-y-auto relative">
           {hours.map(h => (
-            <div key={h} className="flex border-b border-slate-50 min-h-[60px]">
+            <div key={h} className="flex border-b border-slate-50 h-[60px] relative">
               <div className="w-16 border-r border-slate-100 p-2 text-xs text-slate-400 text-right">{h}:00</div>
               <div className="flex-1 relative">
                 {dayLogs.map(l => {
@@ -1150,12 +1196,14 @@ export default function TimeTrackerApp() {
                   }
                   return null;
                 })}
+                {h === nowTime.getHours() && (
+                  <div className="absolute left-0 right-0 border-t-2 border-red-400 z-20 pointer-events-none" style={{ top: `${(nowTime.getMinutes() / 60) * 100}%` }}>
+                    <div className="absolute -left-1.5 -top-1.5 w-3 h-3 bg-red-400 rounded-full"></div>
+                  </div>
+                )}
               </div>
             </div>
           ))}
-          <div className="absolute left-16 right-0 border-t-2 border-red-400 z-20 pointer-events-none" style={{ top: `${nowPosition}%` }}>
-            <div className="absolute -left-2 -top-1.5 w-3 h-3 bg-red-400 rounded-full"></div>
-          </div>
         </div>
       );
     };
@@ -1271,12 +1319,16 @@ export default function TimeTrackerApp() {
 
         {/* 活动计时器 */}
         {activeLog && (
-          <div className="hidden md:flex items-center gap-4 bg-green-50 border border-green-200 px-4 py-2 rounded-xl animate-fade-in shadow-sm">
+          <div className="hidden md:flex items-center gap-4 bg-white border px-4 py-2 rounded-xl animate-fade-in shadow-sm" style={{ borderColor: activeLog.color || '#22c55e', backgroundColor: (activeLog.color || '#22c55e') + '10' }}>
             <div className="flex flex-col">
-              <span className="text-[10px] text-green-600 font-bold uppercase tracking-wider flex items-center gap-1"><Activity size={10} /> Focusing</span>
-              <span className="text-xs font-bold text-slate-700 truncate max-w-[120px]">{activeLog.projectName}</span>
+              <span className="text-[10px] font-bold uppercase tracking-wider flex items-center gap-1" style={{ color: activeLog.color || '#22c55e' }}><Activity size={10} /> Focusing</span>
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold text-slate-700 truncate max-w-[120px]">{activeLog.projectName}</span>
+                {activeLog.tags && activeLog.tags.map(t => <span key={t} className="text-[9px] bg-slate-800 text-white px-1 rounded">{t}</span>)}
+              </div>
             </div>
             <LiveTimer startTime={activeLog.startTime} />
+            <button onClick={() => openTagModal(activeLog)} className="text-slate-500 hover:text-blue-600 p-1.5"><Tag size={16} /></button>
             <button onClick={stopTimer} className="bg-red-500 hover:bg-red-600 text-white p-1.5 rounded-lg shadow-sm transition"><Square size={14} fill="currentColor" /></button>
           </div>
         )}
@@ -1484,7 +1536,7 @@ export default function TimeTrackerApp() {
         {view === 'dashboard' && (
           <div className="animate-fade-in">
             <h2 className="text-2xl font-bold text-slate-800 mb-6 flex items-center gap-2"><TrendingUp className="text-blue-600" /> Insights</h2>
-            <AdvancedDashboard />
+            <AnalysisView logs={logs} projects={projects} />
           </div>
         )}
       </main>
@@ -1509,6 +1561,17 @@ export default function TimeTrackerApp() {
                 <div>
                   <label className="text-xs font-bold text-slate-500 uppercase">分类</label>
                   <input className="input-std" value={projectForm.category} onChange={e => setProjectForm(f => ({ ...f, category: e.target.value }))} placeholder="Category" />
+                </div>
+              </div>
+              <div>
+                <label className="text-xs font-bold text-slate-500 uppercase">主题色</label>
+                <div className="flex gap-2 items-center mt-1">
+                  <input type="color" value={projectForm.color} onChange={e => setProjectForm(f => ({ ...f, color: e.target.value }))} className="h-9 w-16 p-0 border-0 rounded cursor-pointer" />
+                  <div className="flex gap-1 flex-1 overflow-x-auto pb-1">
+                    {Object.values(notionColors).map(c => (
+                      <button type="button" key={c} onClick={() => setProjectForm(f => ({ ...f, color: c }))} className={`w-6 h-6 rounded-full border border-slate-200 shrink-0 ${projectForm.color === c ? 'ring-2 ring-slate-800' : ''}`} style={{ backgroundColor: c }} />
+                    ))}
+                  </div>
                 </div>
               </div>
               <div>
@@ -1587,6 +1650,58 @@ export default function TimeTrackerApp() {
               <div className="flex justify-end gap-2 pt-2">
                 <button type="button" onClick={() => setTaskModalOpen(false)} className="px-4 py-2 rounded-lg border border-slate-200">取消</button>
                 <button type="submit" className="px-4 py-2 rounded-lg bg-slate-900 text-white flex items-center gap-2"><Check size={16} /> 保存</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Tag Popup */}
+      {tagModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-5 space-y-4">
+            <div className="flex justify-between items-center">
+              <h3 className="font-bold">Session Details</h3>
+              <button onClick={() => setTagModalOpen(false)}><X size={20} /></button>
+            </div>
+            <form onSubmit={handleSaveTags} className="space-y-4">
+              <div>
+                <label className="text-xs font-bold text-slate-500 uppercase">Tags</label>
+                <div className="flex flex-wrap gap-2 mb-2">
+                  {tagForm.tags.map(t => (
+                    <span key={t} className="bg-slate-800 text-white px-2 py-1 rounded text-xs flex items-center gap-1">
+                      {t} <button type="button" onClick={() => setTagForm(f => ({ ...f, tags: f.tags.filter(x => x !== t) }))}><X size={10} /></button>
+                    </span>
+                  ))}
+                </div>
+                <input
+                  className="input-std"
+                  placeholder="Add tag + Enter"
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      const val = e.target.value.trim();
+                      if (val && !tagForm.tags.includes(val)) {
+                        setTagForm(f => ({ ...f, tags: [...f.tags, val] }));
+                        e.target.value = '';
+                      }
+                    }
+                  }}
+                />
+                <div className="flex gap-2 mt-2 flex-wrap">
+                  {['Deep Work', 'Meeting', 'Reading', 'Coding', 'Design'].map(s => (
+                    <button type="button" key={s} onClick={() => {
+                      if (!tagForm.tags.includes(s)) setTagForm(f => ({ ...f, tags: [...f.tags, s] }));
+                    }} className="text-[10px] bg-slate-100 px-2 py-1 rounded hover:bg-slate-200">{s}</button>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <label className="text-xs font-bold text-slate-500 uppercase">Notes</label>
+                <textarea className="input-std h-20 resize-none" value={tagForm.notes} onChange={e => setTagForm(f => ({ ...f, notes: e.target.value }))} placeholder="Session notes..."></textarea>
+              </div>
+              <div className="flex justify-end">
+                <button type="submit" className="bg-slate-900 text-white px-4 py-2 rounded-lg font-bold text-sm">Save</button>
               </div>
             </form>
           </div>

@@ -1,4 +1,4 @@
-exports.handler = async function(event, context) {
+export const handler = async function (event, context) {
   if (event.httpMethod !== "POST") return { statusCode: 405, body: "Method Not Allowed" };
 
   const { databaseId, filter } = JSON.parse(event.body);
@@ -8,7 +8,7 @@ exports.handler = async function(event, context) {
 
   try {
     const payload = { page_size: 100 };
-    // 如果前端传了 filter（比如过滤掉已完成的任务），则透传给 Notion
+    // If frontend passed filter, use it
     if (filter) payload.filter = filter;
 
     const response = await fetch(`https://api.notion.com/v1/databases/${databaseId}/query`, {

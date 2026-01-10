@@ -3,8 +3,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import AnalysisView from './components/AnalysisView';
 import ProjectList from './components/ProjectList';
 import TaskList from './components/TaskList';
-import ActiveTimer from './components/ActiveTimer';
-import { firebaseConfig as localConfig, appId as localAppId } from './config';
+// ActiveTimer removed
 import { initializeApp } from 'firebase/app';
 import {
   getAuth,
@@ -60,18 +59,20 @@ import {
   Tag
 } from 'lucide-react';
 
-// --- 1. Firebase Config ---
-let firebaseConfig;
-let appId;
 
-if (typeof __firebase_config !== 'undefined') {
-  firebaseConfig = JSON.parse(__firebase_config);
-  appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-} else {
-  firebaseConfig = localConfig;
-  appId = localAppId;
-}
 
+// --- Configuration ---
+const firebaseConfig = {
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+  appId: import.meta.env.VITE_FIREBASE_APP_ID
+};
+const appId = "timer-app-v1";
+
+// Initialize Firebase
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
@@ -1324,13 +1325,7 @@ export default function TimeTrackerApp() {
         )}
       </main>
 
-      <ActiveTimer
-        activeLog={activeLog}
-        projects={projects}
-        onStop={stopTimer}
-        onAddTag={() => { setTagForm({ id: activeLog.id, tags: activeLog.tags || [], notes: activeLog.notes || '' }); setTagModalOpen(true); }}
-        onAddNote={() => { setTagForm({ id: activeLog.id, tags: activeLog.tags || [], notes: activeLog.notes || '' }); setTagModalOpen(true); }}
-      />
+      {/* ActiveTimer Removed */}
       {/* 项目编辑弹窗 */}
       {
         projectModalOpen && (

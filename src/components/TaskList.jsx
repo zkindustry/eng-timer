@@ -19,7 +19,6 @@ const TaskList = ({
     const [filter, setFilter] = useState('');
     const [expandedGroups, setExpandedGroups] = useState([]); // Array of group keys
     const [viewComplete, setViewComplete] = useState(false); // false = Active, true = Completed
-    const [selectedIds, setSelectedIds] = useState([]);
 
     const getProjectName = (id) => {
         const p = projects.find(x => x.id === id);
@@ -31,20 +30,19 @@ const TaskList = ({
         return p ? (p.color || '#cbd5e1') : '#cbd5e1';
     };
 
-    // Filtering Logic
-    const filteredTasks = useMemo(() => {
-        let res = tasks.filter(t => t.title.toLowerCase().includes(filter.toLowerCase()));
-        return res.filter(t => {
+    // Grouping Logic
+    const groups = useMemo(() => {
+        let filtered = tasks.filter(t => t.title.toLowerCase().includes(filter.toLowerCase()));
+
+        // Filter by Completion Status
+        filtered = filtered.filter(t => {
             const isDone = ['Done', 'Completed'].includes(t.statusNormalized || t.status);
             return viewComplete ? isDone : !isDone;
         });
-    }, [tasks, filter, viewComplete]);
 
-    // Grouping Logic
-    const groups = useMemo(() => {
-        if (groupBy === 'none') return { 'All Tasks': filteredTasks };
+        if (groupBy === 'none') return { 'All Tasks': filtered };
 
-        return filteredTasks.reduce((groups, task) => {
+        return filtered.reduce((groups, task) => {
             let key = 'Other';
             if (groupBy === 'project') {
                 key = getProjectName(task.projectId || (task.projectIds?.[0]) || '__other');
@@ -56,19 +54,7 @@ const TaskList = ({
             groups[key].push(task);
             return groups;
         }, {});
-    }, [filteredTasks, groupBy, projects]);
-
-    const toggleSelect = (id) => {
-        setSelectedIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
-    };
-
-    const toggleSelectAll = () => {
-        if (selectedIds.length === filteredTasks.length && filteredTasks.length > 0) {
-            setSelectedIds([]);
-        } else {
-            setSelectedIds(filteredTasks.map(t => t.id));
-        }
-    };
+    }, [tasks, filter, groupBy, projects, viewComplete]);
 
     const toggleGroup = (key) => {
         setExpandedGroups(prev => prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key]);
@@ -96,36 +82,6 @@ const TaskList = ({
                 </div>
 
                 <div className="flex items-center gap-3">
-                    {/* Select All */}
-                    <div className="flex items-center justify-center p-1.5 rounded-lg hover:bg-slate-100 transition">
-                        <input
-                            type="checkbox"
-                            checked={filteredTasks.length > 0 && selectedIds.length === filteredTasks.length}
-                            onChange={toggleSelectAll}
-                            className="rounded border-slate-300 text-green-600 focus:ring-green-500 cursor-pointer"
-                            title="Select All Tasks"
-                        />
-                    </div>
-
-                    {selectedIds.length > 0 && (
-                        <div className="flex items-center gap-2 animate-fade-in">
-                            <span className="text-xs font-bold text-slate-500">{selectedIds.length} selected</span>
-                            <button
-                                onClick={() => {
-                                    if (confirm(`Delete ${selectedIds.length} tasks?`)) {
-                                        selectedIds.forEach(id => {
-                                            const t = tasks.find(x => x.id === id);
-                                            if (t) onDeleteTask(t);
-                                        });
-                                        setSelectedIds([]);
-                                    }
-                                }}
-                                className="text-xs bg-red-50 text-red-600 px-2 py-1 rounded-md border border-red-100 hover:bg-red-100 font-bold"
-                            >
-                                Delete
-                            </button>
-                        </div>
-                    )}
                     <button
                         onClick={() => setViewComplete(!viewComplete)}
                         className={`flex items-center gap-2 px-3 py-1.5 text-xs font-bold rounded-lg border transition-all ${viewComplete
@@ -134,10 +90,10 @@ const TaskList = ({
                             }`}
                     >
                         {viewComplete ? <CheckSquare size={14} /> : <Archive size={14} />}
-                        {viewComplete ? 'Hide Completed' : 'Completed'}
+                        {viewComplete ? 'Viewing Completed' : 'View Completed'}
                     </button>
                     <div className="text-slate-400 text-xs font-mono">
-                        {filteredTasks.length} tasks
+                        {Object.values(groups).reduce((acc, list) => acc + list.length, 0)} tasks
                     </div>
                 </div>
             </div>
@@ -176,18 +132,10 @@ const TaskList = ({
                                         const isActive = activeLog?.taskId === task.id;
 
                                         return (
-                                            <div key={task.id} className={`group flex items-center gap-3 px-4 py-3 hover:bg-slate-50 transition-colors ${isActive ? 'bg-blue-50/50' : ''}`}>
-                                                {/* Selection Checkbox */}
-                                                <input
-                                                    type="checkbox"
-                                                    checked={selectedIds.includes(task.id)}
-                                                    onChange={() => toggleSelect(task.id)}
-                                                    className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-                                                />
-
+                                            <div key={task.id} className={`group flex items-center gap-3 px-4 py-3 hover:bg-slate-50 transition-colors pl-10 ${isActive ? 'bg-blue-50/50' : ''}`}>
                                                 {/* Status Toggle */}
                                                 <button
-                                                    onClick={(e) => { e.stopPropagation(); onUpdateTask(task, { status: isDone ? 'To Do' : 'Done' }); }}
+                                                    onClick={() => onUpdateTask(task, { status: isDone ? 'To Do' : 'Done' })}
                                                     className={`shrink-0 transition-colors ${isDone ? 'text-green-500' : 'text-slate-300 hover:text-purple-500'}`}
                                                 >
                                                     {isDone ? <CheckCircle2 size={18} /> : <Circle size={18} />}
@@ -236,7 +184,7 @@ const TaskList = ({
                                                     )}
 
                                                     <button
-                                                        onClick={(e) => { e.stopPropagation(); onEditTask(task); }}
+                                                        onClick={() => onEditTask(task)}
                                                         className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg"
                                                         title="Edit Task"
                                                     >
@@ -244,7 +192,7 @@ const TaskList = ({
                                                     </button>
 
                                                     <button
-                                                        onClick={(e) => { e.stopPropagation(); onDeleteTask(task); }}
+                                                        onClick={() => onDeleteTask(task)}
                                                         className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg"
                                                         title="Delete Task"
                                                     >

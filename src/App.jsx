@@ -1,6 +1,9 @@
 ﻿
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import AnalysisView from './components/AnalysisView';
+import ProjectList from './components/ProjectList';
+import TaskList from './components/TaskList';
+import ActiveTimer from './components/ActiveTimer';
 import { firebaseConfig as localConfig, appId as localAppId } from './config';
 import { initializeApp } from 'firebase/app';
 import {
@@ -180,8 +183,7 @@ export default function TimeTrackerApp() {
   const [tasks, setTasks] = useState([]);
   const [logs, setLogs] = useState([]);
   const [activeLog, setActiveLog] = useState(null);
-  const [view, setView] = useState('projects'); // 'projects', 'calendar', 'dashboard'
-  const [subView, setSubView] = useState('board'); // 'board', 'table', 'tasks'
+  const [view, setView] = useState('projects'); // 'projects', 'tasks', 'calendar', 'dashboard'
   const [searchQuery, setSearchQuery] = useState('');
   const [taskSearch, setTaskSearch] = useState('');
   const [taskStatusFilter, setTaskStatusFilter] = useState('all');
@@ -200,7 +202,7 @@ export default function TimeTrackerApp() {
   const [projectForm, setProjectForm] = useState({ id: null, name: '', status: 'To Do', category: 'General', notionId: null, notionDatabaseId: '', targetDbId: '', isOtherBucket: false });
   const [taskForm, setTaskForm] = useState({ id: null, title: '', status: 'To Do', projectId: '', projectIds: [], projectName: '', projectNotionId: null, notionId: null, notionDatabaseId: '', targetDbId: '' });
 
-  const [boardGroupBy, setBoardGroupBy] = useState('status'); // 'status' | 'category'
+
   const [selectedProjectIds, setSelectedProjectIds] = useState([]);
   const [selectedTaskIds, setSelectedTaskIds] = useState([]);
   const [selectedLogIds, setSelectedLogIds] = useState([]);
@@ -451,40 +453,84 @@ export default function TimeTrackerApp() {
   };
 
   // --- Timer Logic ---
-  const toggleTimer = async (project) => {
+  const toggleTimer = async (target, type = 'project') => {
     if (activeLog) {
-      if (activeLog.projectId === project.id) { await stopTimer(); }
-      else { await stopTimer(); await startTimer(project); }
+      // Check if we are toggling the SAME active item
+      const isSame = type === 'project'
+        ? activeLog.projectId === target.id
+        : activeLog.taskId === target.id;
+
+      if (isSame) {
+        await stopTimer();
+      } else {
+        await stopTimer();
+        await startTimer(target, type);
+      }
     } else {
-      await startTimer(project);
+      await startTimer(target, type);
     }
   };
 
-  const startTimer = async (project) => {
+  const startTimer = async (target, type = 'project') => {
     try {
-      await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'timelogs'), {
-        projectId: project.id,
-        projectName: project.name,
-        category: project.category || 'Uncategorized',
-        color: project.color || '#cbd5e1', // Default slate-300
-        tags: [],
+      let payload = {
         startTime: serverTimestamp(),
-        endTime: null
-      });
+        endTime: null,
+        tags: []
+      };
+
+      if (type === 'project') {
+        payload = {
+          ...payload,
+          projectId: target.id,
+          projectName: target.name,
+          category: target.category || 'Uncategorized',
+          color: target.color || '#cbd5e1'
+        };
+      } else {
+        // Task Based
+        const project = projects.find(p => p.id === target.projectId) || (target.projectIds?.length ? projects.find(p => p.id === target.projectIds[0]) : null);
+        const fallbackColor = '#cbd5e1';
+
+        payload = {
+          ...payload,
+          taskId: target.id,
+          taskTitle: target.title,
+          projectId: project?.id || null,
+          projectName: project?.name || 'Unknown Project',
+          category: project?.category || 'Uncategorized',
+          color: project?.color || fallbackColor,
+          // Store raw Relation IDs if needed for Sync
+          projectNotionId: project?.notionId || null
+        };
+      }
+
+      await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'timelogs'), payload);
     } catch (e) { alert(e.message); }
   };
 
   const stopTimer = async () => {
     if (!activeLog) return;
     const endTime = new Date();
-    const durationMin = ((endTime - activeLog.startTime) / 1000 / 60);
+    // Calculate duration in minutes
+    const start = activeLog.startTime?.toDate ? activeLog.startTime.toDate() : new Date(activeLog.startTime);
+    const durationMin = ((endTime - start) / 1000 / 60);
 
     try {
       await updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'timelogs', activeLog.id), { endTime });
-      const project = projects.find(p => p.id === activeLog.projectId);
-      if (project?.notionId) {
-        await syncToNotion(project.notionId, durationMin, project.name);
+
+      // Sync to Notion (Project Level)
+      if (activeLog.projectId) {
+        const project = projects.find(p => p.id === activeLog.projectId);
+        if (project?.notionId) {
+          await syncToNotion(project.notionId, durationMin, project.name);
+        }
       }
+
+      // Sync to Notion (Task Level - Optional, if Task has its own sync logic?)
+      // Currently the user requirement "Task-based timing" implies we should probably sync to the task too if it has a property?
+      // For now, adhering to existing "Project WriteBack".
+
     } catch (e) { console.error(e); }
   };
 
@@ -505,6 +551,8 @@ export default function TimeTrackerApp() {
       if (!res.ok) throw new Error("API Error");
       showToast(`同步成功!`, 'success');
     } catch (e) {
+      // Don't show error toast for sync failure to avoid spamming if frequent, 
+      // or show mild error. User asked for "Debug", so let's show it.
       showToast(`同步失败: ${e.message}`, 'error');
     }
   };
@@ -621,6 +669,7 @@ export default function TimeTrackerApp() {
       id: task?.id || null,
       title: task?.title || '',
       status: task?.status || 'To Do',
+      priority: task?.priority || 'Medium',
       projectId: chosenProj?.id || '',
       projectIds: task?.projectIds && task.projectIds.length ? task.projectIds : (projectTarget ? [projectTarget] : []),
       projectName: chosenProj?.name || '',
@@ -647,6 +696,7 @@ export default function TimeTrackerApp() {
     const payload = {
       title: taskForm.title.trim(),
       status: normalizeStatus(taskForm.status || 'To Do'),
+      priority: taskForm.priority || 'Medium',
       projectId: primary.id,
       projectIds: projectList.map(p => p.id),
       projectName: primary.name,
@@ -669,6 +719,7 @@ export default function TimeTrackerApp() {
         const properties = {
           [targetDb.titleProp]: { title: [{ text: { content: payload.title } }] },
           [targetDb.statusProp]: { select: { name: payload.status } },
+          [targetDb.priorityProp || 'Priority']: { select: { name: payload.priority } },
           [targetDb.projectProp]: { relation: projectList.map(p => p.notionId).filter(Boolean).map(id => ({ id })) }
         };
 
@@ -851,27 +902,43 @@ export default function TimeTrackerApp() {
         const title = props[dbConf.titleProp]?.title?.[0]?.plain_text || 'Untitled';
         const rawStatus = props[dbConf.statusProp]?.select?.name || props[dbConf.statusProp]?.status?.name || 'To Do';
         const status = normalizeStatus(rawStatus);
-        if (status === 'Done') continue; // ignore completed
-        const relations = props[dbConf.projectProp]?.relation || [];
-        const matchedProjects = relations
-          .map(r => projects.find(p => p.notionId === r.id))
-          .filter(Boolean);
-        const targetProjects = matchedProjects.length ? matchedProjects : [otherProject];
-        const primary = targetProjects[0];
+        if (['Done', 'Completed'].includes(status)) continue; // Optional: skip done
+
+        // Priority Mapping
+        const priority = props[dbConf.priorityProp || 'Priority']?.select?.name || 'Medium';
+
+        // Project Linking
+        let targetProjectId = otherProject.id;
+        let targetProjectName = otherProject.name;
+        let targetProjectNotionId = null;
+        let projectIds = [otherProject.id];
+
+        const relationId = props[dbConf.projectProp]?.relation?.[0]?.id;
+        if (relationId) {
+          const foundP = projects.find(p => p.notionId === relationId);
+          if (foundP) {
+            targetProjectId = foundP.id;
+            targetProjectName = foundP.name;
+            targetProjectNotionId = foundP.notionId;
+            projectIds = [foundP.id];
+          }
+        }
 
         const existing = tasks.find(t => t.notionId === page.id);
         const payload = {
           title,
           status,
-          projectId: primary.id,
-          projectIds: targetProjects.map(p => p.id),
-          projectName: primary.name,
-          projectNotionId: primary.notionId || null,
+          priority,
+          projectId: targetProjectId,
+          projectIds,
+          projectName: targetProjectName,
+          projectNotionId: targetProjectNotionId,
           notionId: page.id,
           notionDatabaseId: dbConf.id
         };
 
         if (existing) {
+          // Only update if changed (simple check optional, here we just overwrite)
           await updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'tasks', existing.id), payload);
           updated++;
         } else {
@@ -882,6 +949,44 @@ export default function TimeTrackerApp() {
     }
     return { added, updated };
   };
+
+  const handleManualAddLog = async (logData) => {
+    // logData: { startTime, endTime, projectId, ... }
+    try {
+      if (!logData.projectId && !logData.taskId) throw new Error("Project or Task required");
+      const project = projects.find(p => p.id === logData.projectId) || await ensureOtherProject();
+
+      const payload = {
+        startTime: logData.startTime,
+        endTime: logData.endTime,
+        projectId: project.id,
+        projectName: project.name,
+        category: project.category || 'General',
+        color: project.color || '#cbd5e1',
+        tags: logData.tags || [],
+        notes: logData.notes || '',
+        taskId: logData.taskId || null,
+        taskTitle: logData.taskTitle || null
+      };
+
+      const ref = await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'timelogs'), payload);
+
+      // Sync
+      const durationMin = (logData.endTime - logData.startTime) / 1000 / 60;
+      // Sync to Project Notion
+      if (project.notionId) {
+        await syncToNotion(project.notionId, durationMin, project.name);
+      }
+
+      showToast('Log added & synced', 'success');
+      return ref.id;
+    } catch (e) {
+      console.error(e);
+      showToast(e.message, 'error');
+    }
+  };
+
+
 
   const handleImport = async () => {
     setImportLog('连接中...');
@@ -899,335 +1004,10 @@ export default function TimeTrackerApp() {
   };
 
   // --- UI Components ---
-  const KanbanBoard = () => {
-    const groupKeys = useMemo(() => {
-      if (boardGroupBy === 'category') {
-        const cats = Array.from(new Set(filteredProjects.map(p => p.category || 'General')));
-        return cats.length ? cats : ['General'];
-      }
-      const sts = Array.from(new Set(filteredProjects.map(p => p.statusNormalized || 'To Do')));
-      return sts.length ? sts : statusOptions;
-    }, [boardGroupBy, filteredProjects]);
-    return (
-      <div className="flex gap-4 overflow-x-auto pb-4 h-[calc(100vh-220px)]">
-        {groupKeys.map(status => (
-          <div key={status} className="min-w-[280px] bg-slate-100/50 rounded-xl p-3 flex flex-col">
-            <div className="font-bold text-slate-500 mb-3 px-2 flex justify-between items-center">
-              <span>{status}</span>
-              <span className="bg-slate-200 px-2 rounded-full text-xs py-0.5">{filteredProjects.filter(p => (boardGroupBy === 'category' ? (p.category || 'General') : (p.statusNormalized || 'To Do')) === status).length}</span>
-            </div>
-            <div className="space-y-3 overflow-y-auto flex-1 pr-1">
-              {filteredProjects.filter(p => (boardGroupBy === 'category' ? (p.category || 'General') : (p.statusNormalized || 'To Do')) === status).map(p => (
-                <div key={p.id} className="bg-white p-3 rounded-lg border border-slate-200 shadow-sm hover:shadow-md transition-shadow cursor-pointer group relative border-l-4" style={{ borderLeftColor: p.color || '#cbd5e1' }}>
-                  <div className="absolute top-2 right-2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <button onClick={(e) => { e.stopPropagation(); openProjectModal(p); }} className="p-1.5 bg-slate-100 text-slate-600 rounded-md hover:bg-slate-800 hover:text-white">
-                      <Pencil size={12} />
-                    </button>
-                    <button onClick={(e) => { e.stopPropagation(); handleDeleteProject(p); }} className="p-1.5 bg-red-100 text-red-600 rounded-md hover:bg-red-600 hover:text-white">
-                      <Trash2 size={12} />
-                    </button>
-                    <button onClick={(e) => { e.stopPropagation(); toggleTimer(p); }} className="p-1.5 bg-blue-100 text-blue-600 rounded-md hover:bg-blue-600 hover:text-white">
-                      {activeLog?.projectId === p.id ? <Square size={12} fill="currentColor" /> : <Play size={12} fill="currentColor" />}
-                    </button>
-                  </div>
-                  <div className="font-bold text-slate-700 text-sm mb-1">{editingProjectId === p.id ? (
-                    <input autoFocus defaultValue={p.name} className="border rounded px-2 py-1 text-sm w-full" onBlur={(e) => { updateProjectInline(p, { name: e.target.value.trim() || p.name }); setEditingProjectId(null); }} onKeyDown={(e) => { if (e.key === 'Enter') e.target.blur(); if (e.key === 'Escape') setEditingProjectId(null); }} />
-                  ) : (
-                    <span onClick={() => setEditingProjectId(p.id)} className="cursor-text">{p.name}</span>
-                  )}</div>
-                  <div className="flex gap-1 flex-wrap">
-                    <button onClick={() => updateProjectInline(p, { status: cycleStatus(p.status) })} className="text-[10px] bg-slate-900 text-white px-1.5 py-0.5 rounded border border-slate-200 hover:bg-slate-700">{p.statusNormalized || 'To Do'}</button>
-                    <span className="text-[10px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded border border-slate-200">{p.category || 'General'}</span>
-                    {p.notionId && <span className="text-[10px] bg-purple-50 text-purple-600 px-1.5 py-0.5 rounded border border-purple-100">Notion</span>}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        ))}
-      </div>
-    );
-  };
 
-  const TableView = () => (
-    <div className="bg-white rounded-xl border border-slate-200 overflow-hidden h-[calc(100vh-220px)] overflow-y-auto">
-      <table className="w-full text-sm text-left">
-        <thead className="bg-slate-50 text-slate-500 font-bold border-b border-slate-200 sticky top-0 z-10">
-          <tr>
-            <th className="p-4 w-10"><input type="checkbox" checked={selectedProjectIds.length === filteredProjects.length && filteredProjects.length > 0} onChange={(e) => setSelectedProjectIds(e.target.checked ? filteredProjects.map(p => p.id) : [])} /></th>
-            <th className="p-4">项目名称</th>
-            <th className="p-4">状态</th>
-            <th className="p-4">分类</th>
-            <th className="p-4">来源</th>
-            <th className="p-4 text-right">操作</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-slate-100">
-          {filteredProjects.map(p => (
-            <tr key={p.id} className="hover:bg-slate-50 group">
-              <td className="p-4"><input type="checkbox" checked={selectedProjectIds.includes(p.id)} onChange={() => toggleSelectProject(p.id)} /></td>
-              <td className="p-4 font-bold text-slate-700">{editingProjectId === p.id ? <input autoFocus defaultValue={p.name} className="border rounded px-2 py-1 text-sm" onBlur={(e) => { updateProjectInline(p, { name: e.target.value.trim() || p.name }); setEditingProjectId(null); }} onKeyDown={(e) => { if (e.key === 'Enter') { e.target.blur(); } if (e.key === 'Escape') { setEditingProjectId(null); } }} /> : <span onClick={() => setEditingProjectId(p.id)} className="cursor-text">{p.name}</span>}</td>
-              <td className="p-4"><button onClick={() => updateProjectInline(p, { status: cycleStatus(p.status) })} className="bg-slate-100 px-2 py-1 rounded text-xs hover:bg-slate-200">{p.statusNormalized || 'To Do'}</button></td>
-              <td className="p-4 text-slate-500">{p.category || 'General'}</td>
-              <td className="p-4 text-xs">
-                {p.notionId ? <span className="flex items-center gap-1 text-purple-600"><Database size={12} /> Notion</span> : <span className="text-slate-400">Local</span>}
-              </td>
-              <td className="p-4 text-right flex items-center justify-end gap-2">
-                <button onClick={() => openProjectModal(p)} className="text-slate-600 hover:text-slate-900 font-bold text-xs border border-slate-200 px-3 py-1 rounded-lg hover:bg-slate-50 transition-colors flex items-center gap-1">
-                  <Pencil size={14} /> 编辑
-                </button>
-                <button onClick={() => handleDeleteProject(p)} className="text-red-600 hover:text-red-800 font-bold text-xs border border-red-200 px-3 py-1 rounded-lg hover:bg-red-50 transition-colors flex items-center gap-1">
-                  <Trash2 size={14} /> 删除
-                </button>
-                <button onClick={() => toggleTimer(p)} className="text-blue-600 hover:text-blue-800 font-bold text-xs border border-blue-200 px-3 py-1 rounded-lg hover:bg-blue-50 transition-colors">
-                  {activeLog?.projectId === p.id ? '停止' : '开始'}
-                </button>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-  const TaskBoard = () => {
-    const otherColumn = projects.find(p => p.isOtherBucket) || { id: '__other', name: notionConfig.defaultUnassignedProjectName || 'Other', status: 'To Do', category: 'General', virtual: true };
-    const projectColumns = [...filteredProjects, otherColumn];
 
-    return (
-      <div className="space-y-4">
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="flex items-center bg-slate-100 px-3 py-2 rounded-lg">
-            <Search size={16} className="text-slate-400" />
-            <input className="bg-transparent outline-none px-2 text-sm" placeholder="搜索任务..." value={taskSearch} onChange={e => setTaskSearch(e.target.value)} />
-          </div>
-          <div className="flex items-center gap-2 text-sm">
-            <span className="text-slate-500">状态:</span>
-            {['all', ...statusOptions].map(s => (
-              <button key={s} onClick={() => setTaskStatusFilter(s)} className={`px-2 py-1 rounded-md ${taskStatusFilter === s ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600'}`}>{s}</button>
-            ))}
-          </div>
-        </div>
-        <div className="grid md:grid-cols-3 gap-4">
-          {projectColumns.map(proj => (
-            <div key={proj.id} className="bg-white border border-slate-200 rounded-xl p-3 min-h-[260px]"
-              onDragOver={(e) => e.preventDefault()}
-              onDrop={() => handleTaskDrop(proj, proj.virtual)}
-            >
-              <div className="flex justify-between items-center mb-3">
-                <div className="font-bold text-slate-700 flex items-center gap-2">
-                  <Briefcase size={16} />
-                  <span className="truncate">{proj.name}</span>
-                  <span className="bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full text-xs">{filteredTasks.filter(t => (t.projectIds && t.projectIds.length ? t.projectIds : [t.projectId || '__other']).includes(proj.id)).length}</span>
-                </div>
-                {!proj.virtual && (
-                  <div className="flex gap-1">
-                    <button onClick={() => openProjectModal(proj)} className="p-1.5 rounded hover:bg-slate-100 text-slate-500"><Pencil size={14} /></button>
-                    <button onClick={() => handleDeleteProject(proj)} className="p-1.5 rounded hover:bg-red-50 text-red-500"><Trash2 size={14} /></button>
-                  </div>
-                )}
-              </div>
-              <div className="space-y-2">
-                {filteredTasks.filter(t => (t.projectIds && t.projectIds.length ? t.projectIds : [t.projectId || '__other']).includes(proj.id)).map(t => (
-                  <div key={t.id} draggable onDragStart={() => setDragTask(t)} className="border border-slate-200 rounded-lg p-2 bg-slate-50 hover:bg-white transition shadow-sm">
-                    <div className="flex justify-between items-center">
-                      <div className="flex items-center gap-2">
-                        <input type="checkbox" checked={selectedTaskIds.includes(t.id)} onChange={() => toggleSelectTask(t.id)} />
-                        <GripVertical size={12} className="text-slate-400" />
-                        {editingTaskId === t.id ? (
-                          <input autoFocus defaultValue={t.title} className="border rounded px-2 py-1 text-sm"
-                            onBlur={(e) => { updateTaskInline(t, { title: e.target.value.trim() || t.title }); setEditingTaskId(null); }}
-                            onKeyDown={(e) => { if (e.key === 'Enter') e.target.blur(); if (e.key === 'Escape') setEditingTaskId(null); }}
-                          />
-                        ) : (
-                          <span className="font-bold text-sm cursor-text" onClick={() => setEditingTaskId(t.id)}>{t.title}</span>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-1 text-slate-400">
-                        <button onClick={() => openTaskModal(t)} className="p-1 hover:text-slate-900"><Pencil size={14} /></button>
-                        <button onClick={() => handleDeleteTask(t)} className="p-1 hover:text-red-600"><Trash2 size={14} /></button>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2 mt-1">
-                      <button onClick={() => updateTaskInline(t, { status: cycleStatus(t.status) }, t.projectIds && t.projectIds.length ? t.projectIds : [t.projectId])} className="text-[10px] bg-slate-900 text-white px-2 py-0.5 rounded hover:bg-slate-700">{normalizeStatus(t.status || 'To Do')}</button>
-                      {t.notionId && <span className="text-[10px] bg-purple-50 text-purple-600 px-1.5 py-0.5 rounded border border-purple-100">Notion</span>}
-                    </div>
-                  </div>
-                ))}
-                {!filteredTasks.some(t => (t.projectId || '__other') === proj.id) && (
-                  <div className="text-xs text-slate-400 border border-dashed border-slate-200 rounded-lg p-3 text-center">拖拽任务到此或点击上方“新建任务”</div>
-                )}
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-    );
-  };
-  const CalendarView = () => {
-    const [calMode, setCalMode] = useState('day'); // default day view
-    const [currentDate, setCurrentDate] = useState(getBeijingNow());
-    const [nowTime, setNowTime] = useState(getBeijingNow());
-    const dayRef = useRef(null);
 
-    useEffect(() => {
-      const timer = setInterval(() => setNowTime(getBeijingNow()), 60000);
-      return () => clearInterval(timer);
-    }, []);
 
-    useEffect(() => {
-      if (calMode === 'day') {
-        setCurrentDate(getBeijingNow());
-      }
-    }, [calMode]);
-
-    const daysInMonth = (year, month) => new Date(year, month + 1, 0).getDate();
-    const firstDayOfMonth = (year, month) => new Date(year, month, 1).getDay();
-    const toCstDateKey = (d) => new Date(d.toLocaleString('en-US', { timeZone: 'Asia/Shanghai' })).toISOString().split('T')[0];
-
-    const getLogsForDate = (date) => {
-      const dateStr = toCstDateKey(date);
-      return logs.filter(l => {
-        if (!l.startTime) return false;
-        return toCstDateKey(l.startTime) === dateStr;
-      });
-    };
-
-    const renderMonthGrid = () => {
-      const year = currentDate.getFullYear();
-      const month = currentDate.getMonth();
-      const days = daysInMonth(year, month);
-      const startDay = firstDayOfMonth(year, month);
-      const blanks = Array(startDay).fill(null);
-      const daySlots = Array.from({ length: days }, (_, i) => i + 1);
-
-      return (
-        <div className="grid grid-cols-7 gap-px bg-slate-200 border border-slate-200 rounded-lg overflow-hidden">
-          {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(d => (
-            <div key={d} className="bg-slate-50 p-2 text-center text-xs font-bold text-slate-400 uppercase">{d}</div>
-          ))}
-          {[...blanks, ...daySlots].map((d, i) => {
-            if (!d) return <div key={`blank-${i}`} className="bg-white min-h-[100px]"></div>;
-            const targetDate = new Date(year, month, d);
-            const dayLogs = getLogsForDate(targetDate);
-
-            return (
-              <div key={d} className="bg-white min-h-[100px] p-2 hover:bg-slate-50 transition-colors cursor-pointer" onClick={() => { setCurrentDate(targetDate); setCalMode('day'); }}>
-                <div className={`text-xs font-bold mb-1 ${new Date().getDate() === d && new Date().getMonth() === month ? 'text-blue-600' : 'text-slate-500'}`}>{d}</div>
-                <div className="space-y-1">
-                  {dayLogs.slice(0, 3).map(l => (
-                    <div key={l.id} className="text-[10px] bg-blue-50 text-blue-700 p-1 rounded border border-blue-100 truncate">
-                      {l.projectName}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      );
-    };
-
-    const renderWeekGrid = () => {
-      const start = new Date(currentDate);
-      const dayOfWeek = start.getDay();
-      start.setDate(start.getDate() - dayOfWeek);
-      const days = Array.from({ length: 7 }, (_, i) => new Date(start.getFullYear(), start.getMonth(), start.getDate() + i));
-
-      return (
-        <div className="grid grid-cols-7 gap-2">
-          {days.map((d, i) => {
-            const dayLogs = getLogsForDate(d);
-            const isToday = d.toDateString() === new Date().toDateString();
-            return (
-              <div key={i} className={`bg-white p-2 hover:bg-slate-50 flex flex-col cursor-pointer border border-slate-200 rounded-lg ${isToday ? 'ring-2 ring-blue-200' : ''}`} onClick={() => { setCurrentDate(d); setCalMode('day'); }}>
-                <div className={`text-center text-xs font-bold mb-2 p-1 ${isToday ? 'bg-blue-100 text-blue-600 rounded-full' : 'text-slate-500'}`}>
-                  {d.toLocaleDateString('en-US', { weekday: 'short', day: 'numeric' })}
-                </div>
-                <div className="flex-1 space-y-1 overflow-y-auto">
-                  {dayLogs.map(l => (
-                    <div key={l.id} className="text-[10px] bg-purple-50 text-purple-700 p-1 rounded border border-purple-100 shadow-sm truncate">
-                      {l.projectName}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      );
-    };
-
-    useEffect(() => {
-      if (calMode === 'day' && dayRef.current) {
-        const pct = ((nowTime.getHours() * 60 + nowTime.getMinutes()) / (24 * 60));
-        dayRef.current.scrollTop = Math.max(pct * dayRef.current.scrollHeight - 200, 0);
-      }
-    }, [calMode, nowTime]);
-
-    const renderDayStream = () => {
-      const dayLogs = getLogsForDate(currentDate);
-      const hours = Array.from({ length: 24 }, (_, i) => i);
-      const nowPosition = ((nowTime.getHours() * 60 + nowTime.getMinutes()) / (24 * 60)) * 100;
-
-      return (
-        <div ref={dayRef} className="bg-white border border-slate-200 rounded-lg overflow-hidden h-[600px] overflow-y-auto relative">
-          {hours.map(h => (
-            <div key={h} className="flex border-b border-slate-50 h-[60px] relative">
-              <div className="w-16 border-r border-slate-100 p-2 text-xs text-slate-400 text-right">{h}:00</div>
-              <div className="flex-1 relative">
-                {dayLogs.map(l => {
-                  const startH = l.startTime?.getHours();
-                  const startM = l.startTime?.getMinutes();
-                  if (startH === h) {
-                    const top = (startM / 60) * 100;
-                    return (
-                      <div key={l.id}
-                        className="absolute left-2 right-2 bg-blue-100 border-l-4 border-blue-500 text-blue-800 text-xs p-1 rounded shadow-sm z-10 cursor-pointer hover:bg-blue-200"
-                        style={{ top: `${top}%` }}
-                        onClick={() => {
-                          const proj = projects.find(p => p.id === l.projectId);
-                          if (proj) toggleTimer(proj);
-                        }}
-                      >
-                        <div className="font-bold">{l.projectName}</div>
-                        <div className="text-[9px] opacity-75">{l.startTime?.toLocaleTimeString()}</div>
-                      </div>
-                    );
-                  }
-                  return null;
-                })}
-                {h === nowTime.getHours() && (
-                  <div className="absolute left-0 right-0 border-t-2 border-red-400 z-20 pointer-events-none" style={{ top: `${(nowTime.getMinutes() / 60) * 100}%` }}>
-                    <div className="absolute -left-1.5 -top-1.5 w-3 h-3 bg-red-400 rounded-full"></div>
-                  </div>
-                )}
-              </div>
-            </div>
-          ))}
-        </div>
-      );
-    };
-
-    return (
-      <div className="space-y-4">
-        <div className="flex justify-between items-center bg-white p-2 rounded-xl border border-slate-200 shadow-sm">
-          <div className="flex items-center gap-4">
-            <button onClick={() => setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth(), currentDate.getDate() - (calMode === 'month' ? 30 : calMode === 'week' ? 7 : 1)))} className="p-1 hover:bg-slate-100 rounded"><ChevronRight className="rotate-180" size={18} /></button>
-            <span className="font-bold text-lg text-slate-800">{currentDate.toLocaleString('default', { month: 'long', year: 'numeric', day: calMode === 'day' ? 'numeric' : undefined })}</span>
-            <button onClick={() => setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth(), currentDate.getDate() + (calMode === 'month' ? 30 : calMode === 'week' ? 7 : 1)))} className="p-1 hover:bg-slate-100 rounded"><ChevronRight size={18} /></button>
-          </div>
-          <div className="flex bg-slate-100 p-1 rounded-lg">
-            {['month', 'week', 'day'].map(m => (
-              <button key={m} onClick={() => setCalMode(m)} className={`px-3 py-1 rounded text-xs font-bold capitalize transition-all ${calMode === m ? 'bg-white shadow text-slate-800' : 'text-slate-500 hover:text-slate-700'}`}>{m}</button>
-            ))}
-          </div>
-        </div>
-        {calMode === 'month' && renderMonthGrid()}
-        {calMode === 'week' && renderWeekGrid()}
-        {calMode === 'day' && renderDayStream()}
-      </div>
-    );
-  };
   const AdvancedDashboard = () => {
     const totalTime = logs.reduce((acc, l) => acc + (l.endTime ? l.endTime - l.startTime : 0), 0);
     const totalHours = (totalTime / 3600000).toFixed(1);
@@ -1409,7 +1189,7 @@ export default function TimeTrackerApp() {
                         }} placeholder="名称 (仅供区分)" />
                         <button onClick={() => {
                           const list = notionConfig.taskDatabases.filter((_, i) => i !== idx);
-                          setNotionConfig(c => ({ ...c, taskDatabases: list.length ? list : [{ id: '', name: 'Task DB 1', titleProp: 'Title', statusProp: 'Status', projectProp: 'Project' }] }));
+                          setNotionConfig(c => ({ ...c, taskDatabases: list.length ? list : [{ id: '', name: 'Task DB 1', titleProp: 'Title', statusProp: 'Status', projectProp: 'Project', priorityProp: 'Priority' }] }));
                         }} className="p-2 rounded-lg bg-red-50 text-red-500 hover:bg-red-100"><Trash2 size={14} /></button>
                       </div>
                       <input className="input-std" value={dbConf.id} onChange={e => {
@@ -1427,6 +1207,9 @@ export default function TimeTrackerApp() {
                         <input className="input-std" value={dbConf.projectProp} onChange={e => {
                           const list = [...notionConfig.taskDatabases]; list[idx] = { ...list[idx], projectProp: e.target.value }; setNotionConfig(c => ({ ...c, taskDatabases: list }));
                         }} placeholder="Project 关联列" />
+                        <input className="input-std" value={dbConf.priorityProp || ''} onChange={e => {
+                          const list = [...notionConfig.taskDatabases]; list[idx] = { ...list[idx], priorityProp: e.target.value }; setNotionConfig(c => ({ ...c, taskDatabases: list }));
+                        }} placeholder="Priority (Selection)" />
                       </div>
                     </div>
                   ))}
@@ -1468,10 +1251,13 @@ export default function TimeTrackerApp() {
         <div className="flex md:flex-col justify-around w-full gap-2">
           <div className="md:mb-4">
             <div className="hidden md:block text-xs font-bold text-slate-400 uppercase mb-2 px-3">Workspace</div>
-            <NavBtn icon={<LayoutGrid />} label="Projects" active={view === 'projects'} onClick={() => setView('projects')} />
-            <NavBtn icon={<CalendarIcon />} label="Calendar" active={view === 'calendar'} onClick={() => setView('calendar')} />
-            <NavBtn icon={<BarChart3 />} label="Analytics" active={view === 'dashboard'} onClick={() => setView('dashboard')} />
           </div>
+          <nav className="space-y-2">
+            <NavBtn icon={<LayoutGrid size={20} />} label="Projects" active={view === 'projects'} onClick={() => setView('projects')} />
+            <NavBtn icon={<Check size={20} />} label="Tasks" active={view === 'tasks'} onClick={() => setView('tasks')} />
+
+            <NavBtn icon={<BarChart3 size={20} />} label="Analytics" active={view === 'dashboard'} onClick={() => setView('dashboard')} />
+          </nav>
 
           <div className="md:mb-4">
             <div className="hidden md:block text-xs font-bold text-slate-400 uppercase mb-2 px-3">Integration</div>
@@ -1486,233 +1272,252 @@ export default function TimeTrackerApp() {
 
       {/* 主内容区 */}
       <main className="pt-24 px-4 md:px-8 pb-8 max-w-6xl mx-auto">
+        {/* Header Actions */}
+        <div className="flex justify-between items-center mb-6">
+          <h1 className="text-2xl font-bold text-slate-800 capitalize flex items-center gap-2">
+            {view === 'projects' && <><LayoutGrid className="text-blue-600" /> Projects</>}
+            {view === 'tasks' && <><Check className="text-blue-600" /> Tasks</>}
+            {view === 'calendar' && <><CalendarIcon className="text-blue-600" /> Schedule</>}
+            {view === 'dashboard' && <><BarChart3 className="text-blue-600" /> Insights</>}
+          </h1>
+          <div className="flex gap-2">
+            {view === 'projects' && (
+              <button onClick={() => openProjectModal()} className="bg-slate-900 hover:bg-slate-800 text-white px-4 py-2 rounded-lg flex items-center gap-2 shadow-lg hover:shadow-xl transition-all"><Plus size={16} /> New Project</button>
+            )}
+            {view === 'tasks' && (
+              <button onClick={() => openTaskModal()} className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg flex items-center gap-2 shadow-lg hover:shadow-xl transition-all"><Plus size={16} /> New Task</button>
+            )}
+          </div>
+        </div>
 
-        {/* 项目视图 */}
         {view === 'projects' && (
-          <div className="animate-fade-in">
-            <div className="flex flex-col md:flex-row justify-between items-center mb-6 gap-4">
-              <div className="flex bg-slate-200 p-1 rounded-lg self-start">
-                <button onClick={() => setSubView('board')} className={`px-3 py-1.5 rounded-md text-sm font-bold flex items-center gap-2 transition-all ${subView === 'board' ? 'bg-white shadow text-slate-800' : 'text-slate-500'}`}><Columns size={16} /> Board</button>
-                <button onClick={() => setSubView('table')} className={`px-3 py-1.5 rounded-md text-sm font-bold flex items-center gap-2 transition-all ${subView === 'table' ? 'bg-white shadow text-slate-800' : 'text-slate-500'}`}><TableIcon size={16} /> Table</button>
-                <button onClick={() => setSubView('tasks')} className={`px-3 py-1.5 rounded-md text-sm font-bold flex items-center gap-2 transition-all ${subView === 'tasks' ? 'bg-white shadow text-slate-800' : 'text-slate-500'}`}><List size={16} /> Tasks</button>
-              </div>
-
-              <div className="flex gap-2 flex-wrap">
-                {subView === 'board' && (
-                  <div className="flex bg-slate-100 rounded-lg overflow-hidden text-xs font-bold">
-                    <button onClick={() => setBoardGroupBy('status')} className={`px-3 py-2 ${boardGroupBy === 'status' ? 'bg-slate-900 text-white' : 'text-slate-600'}`}>按状态</button>
-                    <button onClick={() => setBoardGroupBy('category')} className={`px-3 py-2 ${boardGroupBy === 'category' ? 'bg-slate-900 text-white' : 'text-slate-600'}`}>按分类</button>
-                  </div>
-                )}
-                <button onClick={() => openProjectModal()} className="bg-slate-900 hover:bg-slate-800 text-white px-4 py-2 rounded-lg flex items-center gap-2"><Plus size={16} /> 新建项目</button>
-                <button onClick={() => openTaskModal()} className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg flex items-center gap-2"><Plus size={16} /> 新建任务</button>
-              </div>
-            </div>
-
-            <div className="flex flex-wrap gap-2 mb-4">
-              <button onClick={deleteSelectedProjects} className="text-xs px-3 py-2 rounded-lg border border-slate-200">删除选中项目</button>
-              <button onClick={deleteSelectedTasks} className="text-xs px-3 py-2 rounded-lg border border-slate-200">删除选中任务</button>
-              <button onClick={deleteSelectedLogs} className="text-xs px-3 py-2 rounded-lg border border-slate-200">删除选中记录</button>
-              <button onClick={clearAllProjects} className="text-xs px-3 py-2 rounded-lg border border-red-200 text-red-600">清空全部项目</button>
-              <button onClick={clearAllTasks} className="text-xs px-3 py-2 rounded-lg border border-red-200 text-red-600">清空全部任务</button>
-              <button onClick={clearAllLogs} className="text-xs px-3 py-2 rounded-lg border border-red-200 text-red-600">清空全部记录</button>
-            </div>
-
-            {subView === 'board' && <KanbanBoard />}
-            {subView === 'table' && <TableView />}
-            {subView === 'tasks' && <TaskBoard />}
-          </div>
+          <ProjectList
+            projects={filteredProjects}
+            activeLog={activeLog}
+            onStartTimer={toggleTimer}
+            onStopTimer={stopTimer}
+            onEditProject={openProjectModal}
+            onDeleteProject={handleDeleteProject}
+            onUpdateProject={updateProjectInline}
+          />
         )}
 
-        {/* 日历视图 */}
-        {view === 'calendar' && (
-          <div className="animate-fade-in">
-            <h2 className="text-2xl font-bold text-slate-800 mb-6 flex items-center gap-2"><CalendarIcon className="text-blue-600" /> Schedule</h2>
-            <CalendarView />
-          </div>
+        {view === 'tasks' && (
+          <TaskList
+            tasks={filteredTasks}
+            projects={projects}
+            onUpdateTask={updateTaskInline}
+            onDeleteTask={handleDeleteTask}
+            onEditTask={openTaskModal}
+            activeLog={activeLog}
+            onStartTimer={task => toggleTimer(task, 'task')}
+            onStopTimer={stopTimer}
+          />
         )}
 
-        {/* 报表视图 */}
+
+
         {view === 'dashboard' && (
           <div className="animate-fade-in">
-            <h2 className="text-2xl font-bold text-slate-800 mb-6 flex items-center gap-2"><TrendingUp className="text-blue-600" /> Insights</h2>
-            <AnalysisView logs={logs} projects={projects} />
+            <AnalysisView logs={logs} projects={projects} tasks={enhancedTasks} onManualAddLog={handleManualAddLog} />
           </div>
         )}
       </main>
+
+      <ActiveTimer
+        activeLog={activeLog}
+        projects={projects}
+        onStop={stopTimer}
+        onAddTag={() => { setTagForm({ id: activeLog.id, tags: activeLog.tags || [], notes: activeLog.notes || '' }); setTagModalOpen(true); }}
+        onAddNote={() => { setTagForm({ id: activeLog.id, tags: activeLog.tags || [], notes: activeLog.notes || '' }); setTagModalOpen(true); }}
+      />
       {/* 项目编辑弹窗 */}
-      {projectModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg p-6 space-y-4">
-            <div className="flex justify-between items-center">
-              <h3 className="font-bold text-lg">{projectForm.id ? '编辑项目' : '新建项目'}</h3>
-              <button onClick={() => setProjectModalOpen(false)}><X size={20} /></button>
-            </div>
-            <form className="space-y-3" onSubmit={handleSaveProject}>
-              <div>
-                <label className="text-xs font-bold text-slate-500 uppercase">标题</label>
-                <input className="input-std" value={projectForm.name} onChange={e => setProjectForm(f => ({ ...f, name: e.target.value }))} placeholder="Project title" required />
+      {
+        projectModalOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg p-6 space-y-4">
+              <div className="flex justify-between items-center">
+                <h3 className="font-bold text-lg">{projectForm.id ? '编辑项目' : '新建项目'}</h3>
+                <button onClick={() => setProjectModalOpen(false)}><X size={20} /></button>
               </div>
-              <div className="grid grid-cols-2 gap-3">
+              <form className="space-y-3" onSubmit={handleSaveProject}>
                 <div>
-                  <label className="text-xs font-bold text-slate-500 uppercase">状态</label>
-                  <input className="input-std" value={projectForm.status} onChange={e => setProjectForm(f => ({ ...f, status: e.target.value }))} placeholder="To Do / In Progress / Done" />
+                  <label className="text-xs font-bold text-slate-500 uppercase">标题</label>
+                  <input className="input-std" value={projectForm.name} onChange={e => setProjectForm(f => ({ ...f, name: e.target.value }))} placeholder="Project title" required />
                 </div>
-                <div>
-                  <label className="text-xs font-bold text-slate-500 uppercase">分类</label>
-                  <input className="input-std" value={projectForm.category} onChange={e => setProjectForm(f => ({ ...f, category: e.target.value }))} placeholder="Category" />
-                </div>
-              </div>
-              <div>
-                <label className="text-xs font-bold text-slate-500 uppercase">主题色</label>
-                <div className="flex gap-2 items-center mt-1">
-                  <input type="color" value={projectForm.color} onChange={e => setProjectForm(f => ({ ...f, color: e.target.value }))} className="h-9 w-16 p-0 border-0 rounded cursor-pointer" />
-                  <div className="flex gap-1 flex-1 overflow-x-auto pb-1">
-                    {Object.values(notionColors).map(c => (
-                      <button type="button" key={c} onClick={() => setProjectForm(f => ({ ...f, color: c }))} className={`w-6 h-6 rounded-full border border-slate-200 shrink-0 ${projectForm.color === c ? 'ring-2 ring-slate-800' : ''}`} style={{ backgroundColor: c }} />
-                    ))}
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-xs font-bold text-slate-500 uppercase">状态</label>
+                    <input className="input-std" value={projectForm.status} onChange={e => setProjectForm(f => ({ ...f, status: e.target.value }))} placeholder="To Do / In Progress / Done" />
+                  </div>
+                  <div>
+                    <label className="text-xs font-bold text-slate-500 uppercase">分类</label>
+                    <input className="input-std" value={projectForm.category} onChange={e => setProjectForm(f => ({ ...f, category: e.target.value }))} placeholder="Category" />
                   </div>
                 </div>
-              </div>
-              <div>
-                <label className="text-xs font-bold text-slate-500 uppercase">Notion 数据库</label>
-                <select className="input-std" value={projectForm.targetDbId} onChange={e => setProjectForm(f => ({ ...f, targetDbId: e.target.value }))}>
-                  <option value="">仅本地</option>
-                  {notionConfig.projectDatabases.filter(d => d.id).map(dbConf => (
-                    <option key={dbConf.id} value={dbConf.id}>{dbConf.name || dbConf.id}</option>
-                  ))}
-                </select>
-              </div>
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2 text-sm">
-                  <input type="checkbox" checked={projectForm.isOtherBucket} onChange={e => setProjectForm(f => ({ ...f, isOtherBucket: e.target.checked }))} />
-                  <span>设为“其他”收纳项目</span>
+                <div>
+                  <label className="text-xs font-bold text-slate-500 uppercase">主题色</label>
+                  <div className="flex gap-2 items-center mt-1">
+                    <input type="color" value={projectForm.color} onChange={e => setProjectForm(f => ({ ...f, color: e.target.value }))} className="h-9 w-16 p-0 border-0 rounded cursor-pointer" />
+                    <div className="flex gap-1 flex-1 overflow-x-auto pb-1">
+                      {Object.values(notionColors).map(c => (
+                        <button type="button" key={c} onClick={() => setProjectForm(f => ({ ...f, color: c }))} className={`w-6 h-6 rounded-full border border-slate-200 shrink-0 ${projectForm.color === c ? 'ring-2 ring-slate-800' : ''}`} style={{ backgroundColor: c }} />
+                      ))}
+                    </div>
+                  </div>
                 </div>
-                {projectForm.notionId && <span className="text-xs text-purple-600 flex items-center gap-1"><Link size={14} /> 已关联 Notion</span>}
-              </div>
-              <div className="flex justify-end gap-2 pt-2">
-                <button type="button" onClick={() => setProjectModalOpen(false)} className="px-4 py-2 rounded-lg border border-slate-200">取消</button>
-                <button type="submit" className="px-4 py-2 rounded-lg bg-slate-900 text-white flex items-center gap-2"><Check size={16} /> 保存</button>
-              </div>
-            </form>
+                <div>
+                  <label className="text-xs font-bold text-slate-500 uppercase">Notion 数据库</label>
+                  <select className="input-std" value={projectForm.targetDbId} onChange={e => setProjectForm(f => ({ ...f, targetDbId: e.target.value }))}>
+                    <option value="">仅本地</option>
+                    {notionConfig.projectDatabases.filter(d => d.id).map(dbConf => (
+                      <option key={dbConf.id} value={dbConf.id}>{dbConf.name || dbConf.id}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 text-sm">
+                    <input type="checkbox" checked={projectForm.isOtherBucket} onChange={e => setProjectForm(f => ({ ...f, isOtherBucket: e.target.checked }))} />
+                    <span>设为“其他”收纳项目</span>
+                  </div>
+                  {projectForm.notionId && <span className="text-xs text-purple-600 flex items-center gap-1"><Link size={14} /> 已关联 Notion</span>}
+                </div>
+                <div className="flex justify-end gap-2 pt-2">
+                  <button type="button" onClick={() => setProjectModalOpen(false)} className="px-4 py-2 rounded-lg border border-slate-200">取消</button>
+                  <button type="submit" className="px-4 py-2 rounded-lg bg-slate-900 text-white flex items-center gap-2"><Check size={16} /> 保存</button>
+                </div>
+              </form>
+            </div>
           </div>
-        </div>
-      )}
+        )
+      }
 
       {/* 任务编辑弹窗 */}
-      {taskModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg p-6 space-y-4">
-            <div className="flex justify-between items-center">
-              <h3 className="font-bold text-lg">{taskForm.id ? '编辑任务' : '新建任务'}</h3>
-              <button onClick={() => setTaskModalOpen(false)}><X size={20} /></button>
-            </div>
-            <form className="space-y-3" onSubmit={handleSaveTask}>
-              <div>
-                <label className="text-xs font-bold text-slate-500 uppercase">标题</label>
-                <input className="input-std" value={taskForm.title} onChange={e => setTaskForm(f => ({ ...f, title: e.target.value }))} placeholder="Task title" required />
+      {
+        taskModalOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg p-6 space-y-4">
+              <div className="flex justify-between items-center">
+                <h3 className="font-bold text-lg">{taskForm.id ? '编辑任务' : '新建任务'}</h3>
+                <button onClick={() => setTaskModalOpen(false)}><X size={20} /></button>
               </div>
-              <div className="grid grid-cols-2 gap-3">
+              <form className="space-y-3" onSubmit={handleSaveTask}>
                 <div>
-                  <label className="text-xs font-bold text-slate-500 uppercase">状态</label>
-                  <input className="input-std" value={taskForm.status} onChange={e => setTaskForm(f => ({ ...f, status: e.target.value }))} placeholder="To Do / In Progress / Done" />
+                  <label className="text-xs font-bold text-slate-500 uppercase">标题</label>
+                  <input className="input-std" value={taskForm.title} onChange={e => setTaskForm(f => ({ ...f, title: e.target.value }))} placeholder="Task title" required />
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-xs font-bold text-slate-500 uppercase">状态</label>
+                    <input className="input-std" value={taskForm.status} onChange={e => setTaskForm(f => ({ ...f, status: e.target.value }))} placeholder="To Do / In Progress / Done" />
+                  </div>
+                  <div>
+                    <label className="text-xs font-bold text-slate-500 uppercase">优先级</label>
+                    <select className="input-std" value={taskForm.priority} onChange={e => setTaskForm(f => ({ ...f, priority: e.target.value }))}>
+                      <option value="High">High</option>
+                      <option value="Medium">Medium</option>
+                      <option value="Low">Low</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-xs font-bold text-slate-500 uppercase">所属项目</label>
+                    <div className="max-h-28 overflow-y-auto border border-slate-200 rounded-lg p-2 space-y-1 bg-slate-50">
+                      {projects.map(p => (
+                        <label key={p.id} className="flex items-center gap-2 text-xs">
+                          <input
+                            type="checkbox"
+                            checked={taskForm.projectIds?.includes(p.id)}
+                            onChange={() => {
+                              const exists = taskForm.projectIds?.includes(p.id);
+                              const next = exists ? taskForm.projectIds.filter(id => id !== p.id) : [...(taskForm.projectIds || []), p.id];
+                              setTaskForm(f => ({ ...f, projectIds: next, projectId: next[0] || '', projectName: (projects.find(px => px.id === (next[0] || ''))?.name) || '' }));
+                            }}
+                          />
+                          <span>{p.name}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
                 </div>
                 <div>
-                  <label className="text-xs font-bold text-slate-500 uppercase">所属项目</label>
-                  <div className="max-h-28 overflow-y-auto border border-slate-200 rounded-lg p-2 space-y-1 bg-slate-50">
-                    {projects.map(p => (
-                      <label key={p.id} className="flex items-center gap-2 text-xs">
-                        <input
-                          type="checkbox"
-                          checked={taskForm.projectIds?.includes(p.id)}
-                          onChange={() => {
-                            const exists = taskForm.projectIds?.includes(p.id);
-                            const next = exists ? taskForm.projectIds.filter(id => id !== p.id) : [...(taskForm.projectIds || []), p.id];
-                            setTaskForm(f => ({ ...f, projectIds: next, projectId: next[0] || '', projectName: (projects.find(px => px.id === (next[0] || ''))?.name) || '' }));
-                          }}
-                        />
-                        <span>{p.name}</span>
-                      </label>
+                  <label className="text-xs font-bold text-slate-500 uppercase">Notion 数据库</label>
+                  <select className="input-std" value={taskForm.targetDbId} onChange={e => setTaskForm(f => ({ ...f, targetDbId: e.target.value }))}>
+                    <option value="">仅本地</option>
+                    {notionConfig.taskDatabases.filter(d => d.id).map(dbConf => (
+                      <option key={dbConf.id} value={dbConf.id}>{dbConf.name || dbConf.id}</option>
+                    ))}
+                  </select>
+                </div>
+                {taskForm.notionId && <div className="text-xs text-purple-600 flex items-center gap-1"><Link size={14} /> 已关联 Notion</div>}
+                <div className="flex justify-end gap-2 pt-2">
+                  <button type="button" onClick={() => setTaskModalOpen(false)} className="px-4 py-2 rounded-lg border border-slate-200">取消</button>
+                  <button type="submit" className="px-4 py-2 rounded-lg bg-slate-900 text-white flex items-center gap-2"><Check size={16} /> 保存</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )
+      }
+
+      {/* Tag Popup */}
+      {
+        tagModalOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-5 space-y-4">
+              <div className="flex justify-between items-center">
+                <h3 className="font-bold">Session Details</h3>
+                <button onClick={() => setTagModalOpen(false)}><X size={20} /></button>
+              </div>
+              <form onSubmit={handleSaveTags} className="space-y-4">
+                <div>
+                  <label className="text-xs font-bold text-slate-500 uppercase">Tags</label>
+                  <div className="flex flex-wrap gap-2 mb-2">
+                    {tagForm.tags.map(t => (
+                      <span key={t} className="bg-slate-800 text-white px-2 py-1 rounded text-xs flex items-center gap-1">
+                        {t} <button type="button" onClick={() => setTagForm(f => ({ ...f, tags: f.tags.filter(x => x !== t) }))}><X size={10} /></button>
+                      </span>
+                    ))}
+                  </div>
+                  <input
+                    className="input-std"
+                    placeholder="Add tag + Enter"
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        const val = e.target.value.trim();
+                        if (val && !tagForm.tags.includes(val)) {
+                          setTagForm(f => ({ ...f, tags: [...f.tags, val] }));
+                          e.target.value = '';
+                        }
+                      }
+                    }}
+                  />
+                  <div className="flex gap-2 mt-2 flex-wrap">
+                    {['Deep Work', 'Meeting', 'Reading', 'Coding', 'Design'].map(s => (
+                      <button type="button" key={s} onClick={() => {
+                        if (!tagForm.tags.includes(s)) setTagForm(f => ({ ...f, tags: [...f.tags, s] }));
+                      }} className="text-[10px] bg-slate-100 px-2 py-1 rounded hover:bg-slate-200">{s}</button>
                     ))}
                   </div>
                 </div>
-              </div>
-              <div>
-                <label className="text-xs font-bold text-slate-500 uppercase">Notion 数据库</label>
-                <select className="input-std" value={taskForm.targetDbId} onChange={e => setTaskForm(f => ({ ...f, targetDbId: e.target.value }))}>
-                  <option value="">仅本地</option>
-                  {notionConfig.taskDatabases.filter(d => d.id).map(dbConf => (
-                    <option key={dbConf.id} value={dbConf.id}>{dbConf.name || dbConf.id}</option>
-                  ))}
-                </select>
-              </div>
-              {taskForm.notionId && <div className="text-xs text-purple-600 flex items-center gap-1"><Link size={14} /> 已关联 Notion</div>}
-              <div className="flex justify-end gap-2 pt-2">
-                <button type="button" onClick={() => setTaskModalOpen(false)} className="px-4 py-2 rounded-lg border border-slate-200">取消</button>
-                <button type="submit" className="px-4 py-2 rounded-lg bg-slate-900 text-white flex items-center gap-2"><Check size={16} /> 保存</button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* Tag Popup */}
-      {tagModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-5 space-y-4">
-            <div className="flex justify-between items-center">
-              <h3 className="font-bold">Session Details</h3>
-              <button onClick={() => setTagModalOpen(false)}><X size={20} /></button>
+                <div>
+                  <label className="text-xs font-bold text-slate-500 uppercase">Notes</label>
+                  <textarea className="input-std h-20 resize-none" value={tagForm.notes} onChange={e => setTagForm(f => ({ ...f, notes: e.target.value }))} placeholder="Session notes..."></textarea>
+                </div>
+                <div className="flex justify-end">
+                  <button type="submit" className="bg-slate-900 text-white px-4 py-2 rounded-lg font-bold text-sm">Save</button>
+                </div>
+              </form>
             </div>
-            <form onSubmit={handleSaveTags} className="space-y-4">
-              <div>
-                <label className="text-xs font-bold text-slate-500 uppercase">Tags</label>
-                <div className="flex flex-wrap gap-2 mb-2">
-                  {tagForm.tags.map(t => (
-                    <span key={t} className="bg-slate-800 text-white px-2 py-1 rounded text-xs flex items-center gap-1">
-                      {t} <button type="button" onClick={() => setTagForm(f => ({ ...f, tags: f.tags.filter(x => x !== t) }))}><X size={10} /></button>
-                    </span>
-                  ))}
-                </div>
-                <input
-                  className="input-std"
-                  placeholder="Add tag + Enter"
-                  onKeyDown={e => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      const val = e.target.value.trim();
-                      if (val && !tagForm.tags.includes(val)) {
-                        setTagForm(f => ({ ...f, tags: [...f.tags, val] }));
-                        e.target.value = '';
-                      }
-                    }
-                  }}
-                />
-                <div className="flex gap-2 mt-2 flex-wrap">
-                  {['Deep Work', 'Meeting', 'Reading', 'Coding', 'Design'].map(s => (
-                    <button type="button" key={s} onClick={() => {
-                      if (!tagForm.tags.includes(s)) setTagForm(f => ({ ...f, tags: [...f.tags, s] }));
-                    }} className="text-[10px] bg-slate-100 px-2 py-1 rounded hover:bg-slate-200">{s}</button>
-                  ))}
-                </div>
-              </div>
-              <div>
-                <label className="text-xs font-bold text-slate-500 uppercase">Notes</label>
-                <textarea className="input-std h-20 resize-none" value={tagForm.notes} onChange={e => setTagForm(f => ({ ...f, notes: e.target.value }))} placeholder="Session notes..."></textarea>
-              </div>
-              <div className="flex justify-end">
-                <button type="submit" className="bg-slate-900 text-white px-4 py-2 rounded-lg font-bold text-sm">Save</button>
-              </div>
-            </form>
           </div>
-        </div>
-      )}
+        )
+      }
 
       <style>{`
         .input-std { width: 100%; padding: 0.5rem 0.75rem; border-radius: 0.5rem; background-color: #f8fafc; border: 1px solid #e2e8f0; outline: none; font-size: 0.875rem; }
         .input-std:focus { ring: 2px; ring-color: #3b82f6; }
       `}</style>
-    </div>
+    </div >
   );
 }
 

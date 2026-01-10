@@ -1084,40 +1084,46 @@ export default function TimeTrackerApp() {
 
   if (!user) return <AuthScreen />;
   return (
-    <div className="min-h-screen bg-slate-50 font-sans text-slate-900 pb-20 md:pb-0 md:pl-64">
+    <div className="min-h-screen bg-[#F6F8FC] font-sans text-slate-900 pb-32 md:pb-0 md:pl-72 transition-all duration-300">
 
       {/* 顶部搜索栏 */}
-      <div className="fixed top-0 left-0 md:left-64 right-0 bg-white/80 backdrop-blur-md border-b border-slate-200 p-4 z-40 flex items-center justify-between gap-4">
-        <div className="flex items-center gap-3 bg-slate-100 px-4 py-2.5 rounded-xl flex-1 max-w-lg transition-all focus-within:ring-2 focus-within:ring-blue-200">
+      <div className="sticky top-0 right-0 bg-white/80 backdrop-blur-xl border-b border-slate-200/60 p-4 md:px-8 z-40 flex items-center justify-between gap-4 transition-all pb-[calc(1rem+env(safe-area-inset-top))] pt-[max(1rem,env(safe-area-inset-top))]">
+        <div className="flex items-center gap-3 bg-slate-100/50 hover:bg-white border border-transparent hover:border-blue-200 px-4 py-2.5 rounded-2xl flex-1 max-w-lg transition-all focus-within:ring-2 focus-within:ring-blue-500/20 focus-within:bg-white shadow-sm hover:shadow-md">
           <Search size={18} className="text-slate-400" />
           <input
-            className="bg-transparent outline-none w-full text-sm font-medium"
-            placeholder="Search projects..."
+            className="bg-transparent outline-none w-full text-sm font-medium placeholder:text-slate-400"
+            placeholder="Search projects, tasks..."
             value={searchQuery}
             onChange={e => setSearchQuery(e.target.value)}
           />
         </div>
 
-        {/* 活动计时器 */}
+        {/* 活动计时器 Pill */}
         {activeLog && (
-          <div className="hidden md:flex items-center gap-4 bg-white border px-4 py-2 rounded-xl animate-fade-in shadow-sm" style={{ borderColor: activeLog.color || '#22c55e', backgroundColor: (activeLog.color || '#22c55e') + '10' }}>
+          <div className="hidden md:flex items-center gap-4 bg-white border border-slate-100 px-4 py-2 rounded-2xl animate-fade-in shadow-lg shadow-blue-500/5 ring-1 ring-black/5">
+            <div className="relative">
+              <span className="absolute -left-1 top-1/2 -translate-y-1/2 w-2 h-2 rounded-full animate-ping" style={{ backgroundColor: activeLog.color || '#22c55e' }}></span>
+              <span className="relative w-2 h-2 rounded-full block" style={{ backgroundColor: activeLog.color || '#22c55e' }}></span>
+            </div>
             <div className="flex flex-col">
-              <span className="text-[10px] font-bold uppercase tracking-wider flex items-center gap-1" style={{ color: activeLog.color || '#22c55e' }}><Activity size={10} /> Focusing</span>
+              <span className="text-[9px] font-bold uppercase tracking-wider text-slate-400">Current Session</span>
               <div className="flex items-center gap-2">
                 <span className="text-xs font-bold text-slate-700 truncate max-w-[120px]">{activeLog.projectName}</span>
-                {activeLog.tags && activeLog.tags.map(t => <span key={t} className="text-[9px] bg-slate-800 text-white px-1 rounded">{t}</span>)}
               </div>
             </div>
+            <div className="w-px h-6 bg-slate-100"></div>
             <LiveTimer startTime={activeLog.startTime} />
-            <button onClick={() => openTagModal(activeLog)} className="text-slate-500 hover:text-blue-600 p-1.5"><Tag size={16} /></button>
-            <button onClick={stopTimer} className="bg-red-500 hover:bg-red-600 text-white p-1.5 rounded-lg shadow-sm transition"><Square size={14} fill="currentColor" /></button>
+            <div className="flex gap-1">
+              <button onClick={() => openTagModal(activeLog)} className="text-slate-400 hover:text-blue-600 p-1.5 hover:bg-blue-50 rounded-lg transition"><Tag size={16} /></button>
+              <button onClick={stopTimer} className="bg-red-50 text-red-500 hover:bg-red-500 hover:text-white p-1.5 rounded-lg transition"><Square size={14} fill="currentColor" /></button>
+            </div>
           </div>
         )}
       </div>
 
       {/* Notion 配置弹窗 */}
       {configModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm overflow-auto">
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm overflow-auto">
           <div className="bg-white w-full max-w-5xl rounded-2xl shadow-2xl overflow-hidden">
             <div className="bg-slate-900 text-white p-4 flex justify-between items-center">
               <h3 className="font-bold flex gap-2"><Settings size={18} /> 同步配置中心</h3>
@@ -1244,30 +1250,54 @@ export default function TimeTrackerApp() {
       )}
 
       {/* 侧边栏 */}
-      <nav className="fixed bottom-0 md:top-0 left-0 w-full md:w-64 bg-white border-t md:border-r border-slate-200 z-50 md:h-full flex md:flex-col p-4 shadow-2xl md:shadow-none">
+      {/* 侧边栏 / 底部导航栏 */}
+      <nav className="fixed bottom-0 md:top-0 left-0 w-full md:w-72 bg-white/90 backdrop-blur-xl border-t md:border-r border-slate-200/60 z-50 md:h-full flex md:flex-col justify-between p-2 md:p-6 shadow-[0_-4px_20px_-5px_rgba(0,0,0,0.1)] md:shadow-none transition-all duration-300 pb-[env(safe-area-inset-bottom)]">
         <div className="hidden md:block mb-8">
-          <h1 className="text-xl font-bold flex items-center gap-2 text-slate-800"><Clock className="text-blue-600" /> EngTimer Pro</h1>
+          <div className="flex items-center gap-3 mb-1 px-2">
+            <div className="bg-blue-600 p-2 rounded-xl text-white shadow-lg shadow-blue-500/30">
+              <Clock size={24} fill="currentColor" className="text-white" />
+            </div>
+            <div>
+              <h1 className="text-xl font-bold text-slate-800 tracking-tight">EngTimer</h1>
+              <p className="text-[10px] text-slate-400 font-medium tracking-widest uppercase">Pro Workspace</p>
+            </div>
+          </div>
         </div>
 
-        <div className="flex md:flex-col justify-around w-full gap-2">
-          <div className="md:mb-4">
-            <div className="hidden md:block text-xs font-bold text-slate-400 uppercase mb-2 px-3">Workspace</div>
+        <div className="flex flex-1 md:flex-col justify-around md:justify-start w-full gap-1 md:gap-2">
+          <div className="hidden md:block mb-4 mt-4">
+            <div className="text-xs font-bold text-slate-400 uppercase mb-3 px-3 tracking-wider">Menu</div>
           </div>
-          <nav className="space-y-2">
-            <NavBtn icon={<LayoutGrid size={20} />} label="Projects" active={view === 'projects'} onClick={() => setView('projects')} />
-            <NavBtn icon={<Check size={20} />} label="Tasks" active={view === 'tasks'} onClick={() => setView('tasks')} />
+          <NavBtn icon={<LayoutGrid size={22} strokeWidth={2.5} />} label="Projects" active={view === 'projects'} onClick={() => setView('projects')} />
+          <NavBtn icon={<Check size={22} strokeWidth={2.5} />} label="Tasks" active={view === 'tasks'} onClick={() => setView('tasks')} />
+          <NavBtn icon={<BarChart3 size={22} strokeWidth={2.5} />} label="Insights" active={view === 'dashboard'} onClick={() => setView('dashboard')} />
 
-            <NavBtn icon={<BarChart3 size={20} />} label="Analytics" active={view === 'dashboard'} onClick={() => setView('dashboard')} />
-          </nav>
+          <div className="hidden md:block mt-8 mb-4">
+            <div className="text-xs font-bold text-slate-400 uppercase mb-3 px-3 tracking-wider">Sync</div>
+            <NavBtn icon={<RefreshCw size={20} />} label="Notion Integration" onClick={() => setConfigModalOpen(true)} />
+          </div>
 
-          <div className="md:mb-4">
-            <div className="hidden md:block text-xs font-bold text-slate-400 uppercase mb-2 px-3">Integration</div>
-            <NavBtn icon={<RefreshCw />} label="Notion Sync" onClick={() => setConfigModalOpen(true)} />
+          {/* Mobile only Sync Button mixed in or separate? Keeping it simple for mobile */}
+          <div className="md:hidden">
+            <NavBtn icon={<Settings size={22} strokeWidth={2.5} />} label="Settings" onClick={() => setConfigModalOpen(true)} />
           </div>
         </div>
 
         <div className="hidden md:block mt-auto">
-          <button onClick={() => signOut(auth)} className="flex items-center gap-2 text-red-500 hover:bg-red-50 w-full p-3 rounded-xl transition"><LogOut size={18} /> Sign Out</button>
+          <div className="bg-slate-50 rounded-2xl p-4 border border-slate-100 mb-4">
+            <div className="flex items-center gap-3 mb-3">
+              <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-blue-500 to-purple-500 flex items-center justify-center text-white font-bold text-sm shadow-md">
+                {user?.email?.[0].toUpperCase()}
+              </div>
+              <div className="overflow-hidden">
+                <div className="text-sm font-bold text-slate-800 truncate">{user?.email?.split('@')[0]}</div>
+                <div className="text-[10px] text-slate-400 truncate">Pro Plan</div>
+              </div>
+            </div>
+            <button onClick={() => signOut(auth)} className="flex items-center gap-2 text-red-500 hover:text-red-600 hover:bg-red-50 w-full p-2.5 rounded-xl transition-all text-sm font-medium">
+              <LogOut size={16} /> Sign Out
+            </button>
+          </div>
         </div>
       </nav>
 
@@ -1320,7 +1350,21 @@ export default function TimeTrackerApp() {
 
         {view === 'dashboard' && (
           <div className="animate-fade-in">
-            <AnalysisView logs={logs} projects={projects} tasks={enhancedTasks} onManualAddLog={handleManualAddLog} />
+            <AnalysisView
+              logs={logs}
+              projects={projects}
+              tasks={enhancedTasks}
+              onManualAddLog={handleManualAddLog}
+              onUpdateLog={async (id, data) => {
+                await updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'timelogs', id), data);
+                showToast('Log updated', 'success');
+              }}
+              onDeleteLog={async (id) => {
+                if (!window.confirm('Delete this log?')) return;
+                await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'timelogs', id));
+                showToast('Log deleted', 'success');
+              }}
+            />
           </div>
         )}
       </main>
@@ -1517,8 +1561,11 @@ export default function TimeTrackerApp() {
 }
 
 const NavBtn = ({ icon, label, active, onClick }) => (
-  <button onClick={onClick} className={`flex items-center gap-3 p-3 rounded-xl transition-all w-full text-left ${active ? 'bg-slate-900 text-white font-bold shadow-lg' : 'text-slate-500 hover:bg-slate-100'}`}>
-    {icon} <span className="hidden md:inline text-sm">{label}</span>
+  <button onClick={onClick} className={`relative flex md:flex-row flex-col items-center md:gap-3 gap-1 p-2 md:p-3 rounded-2xl transition-all w-full md:text-left justify-center md:justify-start group ${active ? 'text-blue-600 md:bg-blue-50 md:shadow-sm' : 'text-slate-400 hover:text-slate-600 hover:bg-slate-50'}`}>
+    <div className={`transition-transform duration-300 ${active ? 'scale-110' : 'group-hover:scale-105'}`}>{icon}</div>
+    <span className={`text-[10px] md:text-sm font-semibold transition-colors ${active ? 'text-blue-600' : 'text-slate-500 group-hover:text-slate-700'}`}>{label}</span>
+    {active && <div className="absolute top-0 right-0 w-1.5 h-1.5 bg-blue-600 rounded-full md:hidden transform translate-x-[-50%] translate-y-[50%]"></div>}
+    {active && <div className="hidden md:block absolute left-0 top-1/2 -translate-y-1/2 w-1 h-8 bg-blue-600 rounded-r-full"></div>}
   </button>
 );
 

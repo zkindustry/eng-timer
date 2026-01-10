@@ -4,19 +4,20 @@ import {
 } from 'recharts';
 import {
     Clock, Zap, TrendingUp, Tag, Calendar as CalendarIcon, Layers, ChevronLeft, ChevronRight,
-    Plus, Filter, PieChart as PieChartIcon, Activity
+    Plus, Filter, PieChart as PieChartIcon, Activity, Pencil, Trash2
 } from 'lucide-react';
 import { format, startOfDay, endOfDay, startOfWeek, endOfWeek, startOfMonth, endOfMonth, startOfYear, endOfYear, eachDayOfInterval, isSameDay, addDays, subDays, addWeeks, subWeeks, addMonths, subMonths, addYears, subYears } from 'date-fns';
 
 const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#6366f1', '#14b8a6', '#f97316'];
 
-const AnalysisView = ({ logs, projects, tasks, onManualAddLog }) => {
+const AnalysisView = ({ logs, projects, tasks, onManualAddLog, onUpdateLog, onDeleteLog }) => {
     const [viewMode, setViewMode] = useState('dashboard'); // 'dashboard' | 'timeline'
     const [rangeType, setRangeType] = useState('week'); // 'day', 'week', 'month', 'year'
     const [anchorDate, setAnchorDate] = useState(new Date());
 
     // Manual Log State
     const [showManualForm, setShowManualForm] = useState(false);
+    const [editingLog, setEditingLog] = useState(null); // Track log being edited
     const [manualForm, setManualForm] = useState({ start: '', end: '', projectId: '', notes: '' });
 
     // --- Date Logic ---
@@ -108,22 +109,55 @@ const AnalysisView = ({ logs, projects, tasks, onManualAddLog }) => {
         e.preventDefault();
         if (!manualForm.start || !manualForm.end || !manualForm.projectId) return;
 
-        const start = new Date(`${format(anchorDate, 'yyyy-MM-dd')}T${manualForm.start}`); // Simple date Mapping
-        const end = new Date(`${format(anchorDate, 'yyyy-MM-dd')}T${manualForm.end}`); // Simple date Mapping
+        const baseDate = editingLog ? editingLog.startTime : anchorDate; // Keep original date if editing
+        const dateStr = format(baseDate, 'yyyy-MM-dd');
 
-        if (end <= start) {
-            alert('End time must be after start time');
-            return;
+        const start = new Date(`${dateStr}T${manualForm.start}`);
+        const end = new Date(`${dateStr}T${manualForm.end}`);
+
+        // Handle overnight
+        if (end < start) {
+            // Basic assumption: if end < start for manual entry, maybe next day?
+            // For now limit to same day to keep simple, or alert.
+            end.setDate(end.getDate() + 1);
         }
 
-        await onManualAddLog({
-            projectId: manualForm.projectId,
-            startTime: start,
-            endTime: end,
-            notes: manualForm.notes
-        });
+        if (editingLog) {
+            await onUpdateLog(editingLog.id, {
+                projectId: manualForm.projectId,
+                projectName: projects.find(p => p.id === manualForm.projectId)?.name || 'Unknown',
+                startTime: start,
+                endTime: end,
+                notes: manualForm.notes
+            });
+            setEditingLog(null);
+        } else {
+            await onManualAddLog({
+                projectId: manualForm.projectId,
+                startTime: start,
+                endTime: end,
+                notes: manualForm.notes
+            });
+        }
         setShowManualForm(false);
         setManualForm({ start: '', end: '', projectId: '', notes: '' });
+    };
+
+    const handleEditLog = (log) => {
+        setEditingLog(log);
+        setManualForm({
+            start: format(log.startTime, 'HH:mm'),
+            end: log.endTime ? format(log.endTime, 'HH:mm') : format(new Date(), 'HH:mm'),
+            projectId: log.projectId,
+            notes: log.notes || ''
+        });
+        setShowManualForm(true);
+    };
+
+    const handleCancelEdit = () => {
+        setEditingLog(null);
+        setManualForm({ start: '', end: '', projectId: '', notes: '' });
+        setShowManualForm(false);
     };
 
     return (
@@ -228,9 +262,13 @@ const AnalysisView = ({ logs, projects, tasks, onManualAddLog }) => {
                 <div className="flex-1 bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden flex flex-col animate-fade-in relative">
                     <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
                         <h3 className="font-bold text-slate-700">Timeline / List</h3>
-                        <button onClick={() => setShowManualForm(!showManualForm)} className="text-xs bg-slate-900 text-white px-3 py-1.5 rounded-lg flex items-center gap-2 hover:bg-slate-700 transition">
-                            <Plus size={14} /> Add Manual Log
-                        </button>
+                        <h3 className="font-bold text-slate-700">Timeline / List</h3>
+                        <div className="flex gap-2">
+                            {editingLog && <button onClick={handleCancelEdit} className="text-xs text-slate-500 hover:text-slate-700">Cancel Edit</button>}
+                            <button onClick={() => { setEditingLog(null); setManualForm({ start: '', end: '', projectId: '', notes: '' }); setShowManualForm(!showManualForm); }} className="text-xs bg-slate-900 text-white px-3 py-1.5 rounded-lg flex items-center gap-2 hover:bg-slate-700 transition">
+                                <Plus size={14} /> {editingLog ? 'Update Log' : 'Add Manual Log'}
+                            </button>
+                        </div>
                     </div>
 
                     {/* Manual Entry Form */}
@@ -251,7 +289,7 @@ const AnalysisView = ({ logs, projects, tasks, onManualAddLog }) => {
                                     {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
                                 </select>
                             </div>
-                            <button type="submit" className="bg-blue-600 text-white h-9 rounded-lg font-bold text-xs" >Add Log</button>
+                            <button type="submit" className="bg-blue-600 text-white h-9 rounded-lg font-bold text-xs" >{editingLog ? 'Save Changes' : 'Add Log'}</button>
                         </form>
                     )}
 
@@ -276,6 +314,11 @@ const AnalysisView = ({ logs, projects, tasks, onManualAddLog }) => {
                                             {log.endTime ? ((log.endTime - log.startTime) / 60000).toFixed(0) : '...'} <span className="text-[10px] font-normal text-slate-400">min</span>
                                         </div>
                                         <div className="text-[10px] text-slate-400">{format(log.startTime, 'MMM dd')}</div>
+                                    </div>
+                                    {/* Edit/Delete Actions */}
+                                    <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity ml-2">
+                                        <button onClick={() => handleEditLog(log)} className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded"><Pencil size={14} /></button>
+                                        <button onClick={() => onDeleteLog(log.id)} className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded"><Trash2 size={14} /></button>
                                     </div>
                                 </div>
                             ))

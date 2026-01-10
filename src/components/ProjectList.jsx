@@ -133,8 +133,8 @@ const ProjectList = ({
             {viewMode === 'list' ? (
                 <>
                     {/* List Header */}
-                    <div className="grid grid-cols-[40px_1fr_120px_150px_100px] gap-4 px-6 py-3 border-b border-slate-200 bg-slate-50 text-xs font-bold text-slate-500 uppercase tracking-wider relative">
-                        <div className="flex items-center justify-center">
+                    <div className="grid grid-cols-[auto_1fr_auto] md:grid-cols-[40px_1fr_120px_150px_100px] gap-2 md:gap-4 px-4 md:px-6 py-3 border-b border-slate-200 bg-slate-50 text-xs font-bold text-slate-500 uppercase tracking-wider relative transition-all">
+                        <div className="flex items-center justify-center w-6 md:w-auto">
                             <input
                                 type="checkbox"
                                 checked={selectedIds.length === sortedProjects.length && sortedProjects.length > 0}
@@ -144,9 +144,9 @@ const ProjectList = ({
                         </div>
 
                         <SortableHeader label="Project Name" sortKey="name" currentConfig={sortConfig} onSort={handleSort} />
-                        <SortableHeader label="Status" sortKey="statusNormalized" currentConfig={sortConfig} onSort={handleSort} />
-                        <SortableHeader label="Category" sortKey="category" currentConfig={sortConfig} onSort={handleSort} />
-                        <div className="text-slate-400">Source</div>
+                        <div className="hidden md:block"><SortableHeader label="Status" sortKey="statusNormalized" currentConfig={sortConfig} onSort={handleSort} /></div>
+                        <div className="hidden md:block"><SortableHeader label="Category" sortKey="category" currentConfig={sortConfig} onSort={handleSort} /></div>
+                        <div className="hidden md:block text-slate-400">Source</div>
                     </div>
 
                     {/* List Rows */}
@@ -157,11 +157,11 @@ const ProjectList = ({
                             return (
                                 <div
                                     key={project.id}
-                                    className={`group grid grid-cols-[40px_1fr_120px_150px_100px] gap-4 px-6 py-3 border-b border-slate-50 hover:bg-slate-50/80 transition-colors items-center relative ${isActive ? 'bg-purple-50/50' : ''}`}
+                                    className={`group grid grid-cols-[auto_1fr_auto] md:grid-cols-[40px_1fr_120px_150px_100px] gap-2 md:gap-4 px-4 md:px-6 py-3 border-b border-slate-50 hover:bg-slate-50/80 transition-colors items-center relative ${isActive ? 'bg-purple-50/50' : ''}`}
                                     onMouseEnter={() => setHoverId(project.id)}
                                     onMouseLeave={() => setHoverId(null)}
                                 >
-                                    <div className="flex items-center justify-center">
+                                    <div className="flex items-center justify-center w-6 md:w-auto">
                                         <input
                                             type="checkbox"
                                             checked={selectedIds.includes(project.id)}
@@ -170,16 +170,24 @@ const ProjectList = ({
                                         />
                                     </div>
 
-                                    <div className="font-medium text-slate-800 flex items-center gap-2 relative">
+                                    <div className="font-medium text-slate-800 flex items-center gap-2 relative min-w-0">
                                         <div
                                             className={`w-3 h-3 rounded-full shrink-0`}
                                             style={{ backgroundColor: project.color || '#cbd5e1' }}
                                         />
                                         <span className="truncate">{project.name}</span>
-                                        {project.isOtherBucket && <span className="text-[10px] bg-slate-100 text-slate-500 px-1.5 rounded">Default</span>}
+                                        {project.isOtherBucket && <span className="text-[10px] bg-slate-100 text-slate-500 px-1.5 rounded shrink-0">Default</span>}
+
+                                        {/* Mobile Only Metadata Line */}
+                                        <div className="md:hidden flex items-center gap-2 absolute top-full left-0 mt-0.5 ml-5">
+                                            <span className={`text-[9px] px-1.5 py-0.5 rounded-full border ${project.statusNormalized === 'In Progress' ? 'bg-blue-50 text-blue-600 border-blue-100' : 'bg-slate-100 text-slate-500 border-slate-200'}`}>
+                                                {project.statusNormalized || 'To Do'}
+                                            </span>
+                                            <span className="text-[10px] text-slate-400">{project.category || '-'}</span>
+                                        </div>
                                     </div>
 
-                                    <div>
+                                    <div className="hidden md:block">
                                         <button
                                             className={`text-[10px] px-2 py-1 rounded-full border truncate max-w-[100px] ${project.statusNormalized === 'In Progress' ? 'bg-blue-50 text-blue-600 border-blue-100' :
                                                 project.statusNormalized === 'Done' ? 'bg-green-50 text-green-600 border-green-100' :
@@ -191,31 +199,27 @@ const ProjectList = ({
                                         </button>
                                     </div>
 
-                                    <div className="text-sm text-slate-500 truncate">
+                                    <div className="hidden md:block text-sm text-slate-500 truncate">
                                         {project.category || '-'}
                                     </div>
 
-                                    <div className="text-xs text-slate-400 flex items-center gap-1">
+                                    <div className="hidden md:block text-xs text-slate-400 flex items-center gap-1">
                                         {project.notionId ? <><Database size={12} className="text-purple-500" /> Notion</> : 'Local'}
                                     </div>
 
                                     {/* Floating Action Overlay (Right Side) */}
-                                    <div className="absolute right-4 top-1/2 -translate-y-1/2 flex items-center gap-1 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity bg-white/90 sm:bg-transparent backdrop-blur-sm sm:backdrop-blur-none p-1 sm:p-0 rounded-lg shadow-sm sm:shadow-none border sm:border-none border-slate-100">
-                                        <button
-                                            onClick={(e) => { e.stopPropagation(); isActive ? onStopTimer() : onStartTimer(project); }}
-                                            className={`w-8 h-8 rounded-full flex items-center justify-center transition-all shadow-sm ${isActive
-                                                ? 'bg-red-500 text-white hover:bg-red-600'
-                                                : 'bg-purple-600 text-white hover:bg-purple-700'
-                                                }`}
-                                            title={isActive ? "Stop Timer" : "Start Timer"}
-                                        >
-                                            {isActive ? <Square size={12} fill="currentColor" /> : <Play size={14} fill="currentColor" className="ml-0.5" />}
-                                        </button>
+                                    <div className="flex items-center gap-2 md:absolute md:right-4 md:top-1/2 md:-translate-y-1/2 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity bg-transparent md:bg-white/90 backdrop-blur-sm p-0 md:p-1 rounded-lg">
 
-                                        <button onClick={() => onEditProject(project)} className="p-2 text-slate-400 hover:text-slate-700 transition-colors bg-white border border-slate-200 rounded-full hover:bg-slate-50">
+
+                                        <button onClick={() => onEditProject(project)} className="p-2 text-slate-400 hover:text-slate-700 transition-colors bg-white border border-slate-200 rounded-full hover:bg-slate-50 hidden md:block">
                                             <Pencil size={14} />
                                         </button>
-                                        <button onClick={() => onDeleteProject(project)} className="p-2 text-slate-400 hover:text-red-600 transition-colors bg-white border border-slate-200 rounded-full hover:bg-red-50">
+                                        {/* Mobile more menu substitute or just edit */}
+                                        <button onClick={() => onEditProject(project)} className="md:hidden p-2 text-slate-400">
+                                            <MoreHorizontal size={18} />
+                                        </button>
+
+                                        <button onClick={() => onDeleteProject(project)} className="p-2 text-slate-400 hover:text-red-600 transition-colors bg-white border border-slate-200 rounded-full hover:bg-red-50 hidden md:block">
                                             <Trash2 size={14} />
                                         </button>
                                     </div>
@@ -304,12 +308,6 @@ const KanbanView = ({ projects, activeLog, groupBy, onStartTimer, onStopTimer, o
                                         </div>
                                         <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                                             <button onClick={() => onEditProject(project)} className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded"><Pencil size={12} /></button>
-                                            <button
-                                                onClick={(e) => { e.stopPropagation(); isActive ? onStopTimer() : onStartTimer(project); }}
-                                                className={`w-6 h-6 rounded-full flex items-center justify-center transition-all ${isActive ? 'bg-red-500 hover:bg-red-600' : 'bg-purple-600 hover:bg-purple-700'} text-white`}
-                                            >
-                                                {isActive ? <Square size={10} fill="currentColor" /> : <Play size={10} fill="currentColor" className="ml-0.5" />}
-                                            </button>
                                         </div>
                                     </div>
                                 </div>

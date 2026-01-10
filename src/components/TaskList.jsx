@@ -168,7 +168,7 @@ const TaskList = ({
                                                 </div>
 
                                                 {/* Actions (Appear on Hover) */}
-                                                <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                                <div className="flex items-center gap-1 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
                                                     {/* Timer Action */}
                                                     {!isDone && (
                                                         <button
@@ -185,15 +185,19 @@ const TaskList = ({
 
                                                     <button
                                                         onClick={() => onEditTask(task)}
-                                                        className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg"
+                                                        className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg hidden md:block" // Hidden on mobile, maybe use long press or single simplified edit? Actually keeping it simplifies dev.
                                                         title="Edit Task"
                                                     >
                                                         <Pencil size={14} />
                                                     </button>
+                                                    {/* Mobile Edit Trigger */}
+                                                    <button onClick={() => onEditTask(task)} className="md:hidden p-1.5 text-slate-400">
+                                                        <MoreHorizontal size={16} />
+                                                    </button>
 
                                                     <button
                                                         onClick={() => onDeleteTask(task)}
-                                                        className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg"
+                                                        className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg hidden md:block"
                                                         title="Delete Task"
                                                     >
                                                         <Trash2 size={14} />

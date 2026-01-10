@@ -240,16 +240,20 @@ const AnalysisView = ({ logs, projects, tasks, onManualAddLog, onUpdateLog, onDe
                         </div>
                     </div>
 
-                    <div className="col-span-1 md:col-span-4 bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
-                        <h3 className="font-bold text-slate-700 mb-4 flex items-center gap-2"><Activity size={16} /> Top Tasks</h3>
-                        <div className="h-64">
+                    <div className="col-span-1 md:col-span-4 bg-white p-6 rounded-2xl border border-slate-200 shadow-sm relative">
+                        <h3 className="font-bold text-slate-700 mb-4 flex items-center gap-2"><Activity size={16} /> Top Tasks (Minutes)</h3>
+                        <div className="h-72">
                             <ResponsiveContainer width="100%" height="100%">
-                                <BarChart data={stats.taskData} layout="vertical" margin={{ left: 40 }}>
-                                    <CartesianGrid strokeDasharray="3 3" horizontal={true} vertical={false} />
-                                    <XAxis type="number" />
-                                    <YAxis dataKey="name" type="category" width={150} tick={{ fontSize: 11 }} />
-                                    <RechartsTooltip />
-                                    <Bar dataKey="value" fill="#8b5cf6" radius={[0, 4, 4, 0]} barSize={20} />
+                                <BarChart data={stats.taskData} layout="vertical" margin={{ left: 10, right: 30, top: 10, bottom: 20 }}>
+                                    <CartesianGrid strokeDasharray="3 3" horizontal={true} vertical={true} stroke="#f1f5f9" />
+                                    <XAxis type="number" tick={{ fontSize: 10, fill: '#64748b' }} />
+                                    <YAxis dataKey="name" type="category" width={120} tick={{ fontSize: 11, fill: '#475569' }} tickFormatter={(val) => val.length > 15 ? `${val.substring(0, 15)}...` : val} />
+                                    <RechartsTooltip
+                                        cursor={{ fill: '#f8fafc' }}
+                                        contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
+                                    />
+                                    <Bar dataKey="value" fill="#8b5cf6" radius={[0, 4, 4, 0]} barSize={24} name="Minutes Filtered">
+                                    </Bar>
                                 </BarChart>
                             </ResponsiveContainer>
                         </div>

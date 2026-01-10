@@ -1123,13 +1123,13 @@ export default function TimeTrackerApp() {
 
       {/* Notion 配置弹窗 */}
       {configModalOpen && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm overflow-auto">
-          <div className="bg-white w-full max-w-5xl rounded-2xl shadow-2xl overflow-hidden">
-            <div className="bg-slate-900 text-white p-4 flex justify-between items-center">
+        <div className="fixed inset-0 z-[100] flex items-end md:items-center justify-center bg-black/60 p-4 pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] backdrop-blur-sm overflow-hidden">
+          <div className="bg-white w-full max-w-5xl rounded-2xl md:rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+            <div className="bg-slate-900 text-white p-4 shrink-0 flex justify-between items-center">
               <h3 className="font-bold flex gap-2"><Settings size={18} /> 同步配置中心</h3>
-              <button onClick={() => setConfigModalOpen(false)}><X size={20} /></button>
+              <button onClick={() => setConfigModalOpen(false)} className="p-2 -mr-2 hover:bg-white/10 rounded-full transition-colors"><X size={20} /></button>
             </div>
-            <div className="p-6 space-y-6">
+            <div className="p-6 space-y-6 overflow-y-auto">
               <div className="bg-blue-50 text-blue-800 text-xs p-3 rounded-lg border border-blue-100">
                 <p>1. 支持多个 Project / Task 库，输入 Notion 链接即可自动提取 ID。</p>
                 <p>2. 保存配置后即可同步更新，导入的 Task 会按 Project 关系归类，未指定的进入“其他”。</p>

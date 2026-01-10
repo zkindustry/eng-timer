@@ -6,9 +6,24 @@
   color-scheme: light dark;
   color: rgba(255, 255, 255, 0.87);
   background-color: #242424;
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
-/* Remove default focus outline for charts */
+/* Fix mobile input auto-zoom by enforcing 16px */
+@media screen and (max-width: 768px) {
+
+  input,
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+}
+
+/* Remove default focus outline for charts (Aggressive) */
 *:focus {
   outline: none !important;
 }
@@ -17,10 +32,12 @@
   outline: none !important;
 }
 
-font-synthesis: none;
-text-rendering: optimizeLegibility;
--webkit-font-smoothing: antialiased;
--moz-osx-font-smoothing: grayscale;
+.recharts-surface {
+  outline: none !important;
+}
+
+.recharts-layer {
+  outline: none !important;
 }
 
 a {
